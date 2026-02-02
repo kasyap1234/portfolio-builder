@@ -140,7 +140,7 @@ func TestAllocate_DeepFear_WithQualifyingStock(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	// In Deep Fear: 90% Equity, 10% Debt
+	// In Deep Fear: 100% Equity, 0% Debt
 	// Within Equity: Most to MF, some to qualifying stock
 	var mfTotal, stockTotal, debtTotal float64
 	for _, r := range recs {
@@ -154,12 +154,12 @@ func TestAllocate_DeepFear_WithQualifyingStock(t *testing.T) {
 		}
 	}
 
-	// Debt should be ~10% = 1000
-	assert.InDelta(t, 1000.0, debtTotal, 150.0, "Debt should be ~10%")
+	// Debt should be 0% = 0
+	assert.Equal(t, 0.0, debtTotal, "Debt should be 0% in Deep Fear")
 
-	// Total equity should be ~90% = 9000
+	// Total equity should be 100% = 10000
 	totalEquity := mfTotal + stockTotal
-	assert.InDelta(t, 9000.0, totalEquity, 150.0, "Total equity should be ~90%")
+	assert.InDelta(t, 10000.0, totalEquity, 1.0, "Total equity should be 100%")
 
 	// MF should be majority of equity (stocks get only ~10-15% of equity in Deep Fear)
 	assert.Greater(t, mfTotal, stockTotal, "MF should be greater than stocks in Deep Fear")
@@ -184,7 +184,7 @@ func TestAllocate_Greed_AllToDebt(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	// In Greed: 30% Equity, 70% Debt
+	// In Greed: 40% Equity, 60% Debt
 	var mfTotal, stockTotal, debtTotal float64
 	for _, r := range recs {
 		switch r.AssetType {
@@ -197,16 +197,16 @@ func TestAllocate_Greed_AllToDebt(t *testing.T) {
 		}
 	}
 
-	// Debt should be ~70% = 7000
-	assert.InDelta(t, 7000.0, debtTotal, 100.0, "Debt should be ~70% in Greed regime")
+	// Debt should be ~60% = 6000
+	assert.InDelta(t, 6000.0, debtTotal, 100.0, "Debt should be ~60% in Greed regime")
 
-	// Total equity should be ~30% = 3000
+	// Total equity should be ~40% = 4000
 	totalEquity := mfTotal + stockTotal
-	assert.InDelta(t, 3000.0, totalEquity, 100.0, "Total equity should be ~30%")
+	assert.InDelta(t, 4000.0, totalEquity, 100.0, "Total equity should be ~40%")
 
 	// No qualifying stocks, so all equity goes to MF
 	assert.Equal(t, 0.0, stockTotal, "No stocks should qualify in Greed with non-down stocks")
-	assert.InDelta(t, 3000.0, mfTotal, 100.0, "All equity should go to MF")
+	assert.InDelta(t, 4000.0, mfTotal, 100.0, "All equity should go to MF")
 }
 
 func TestAllocate_Fear_StockQualifiesSharpDrop(t *testing.T) {

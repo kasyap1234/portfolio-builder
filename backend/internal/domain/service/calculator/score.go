@@ -78,3 +78,5 @@ func (s *SimpleScoreCalculator) CalculateScore(assetName string, currentPrice fl
 
 	return score
 }
+
+

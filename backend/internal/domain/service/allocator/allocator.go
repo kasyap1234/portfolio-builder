@@ -74,10 +74,10 @@ var RegimeAllocations = map[MarketRegime]struct {
 	Equity float64
 	Debt   float64
 }{
-	RegimeDeepFear: {Equity: 0.90, Debt: 0.10}, // Maximum equity in deep fear
+	RegimeDeepFear: {Equity: 1.00, Debt: 0.00}, // Maximum equity in deep fear
 	RegimeFear:     {Equity: 0.75, Debt: 0.25},
 	RegimeNeutral:  {Equity: 0.50, Debt: 0.50},
-	RegimeGreed:    {Equity: 0.30, Debt: 0.70}, // Maximum debt in greed
+	RegimeGreed:    {Equity: 0.40, Debt: 0.60}, // Maximum debt in greed
 }
 
 // Stock Selection Thresholds
@@ -103,7 +103,7 @@ const (
 )
 
 type Allocator interface {
-	Allocate(amount float64, currentPortfolio []models.Asset, watchlist []string) ([]models.AllocationRecommendation, error)
+	Allocate(amount float64, currentPortfolio []models.Asset, cashInHand float64, watchlist []string) ([]models.AllocationRecommendation, error)
 	CalculateDropMetrics(symbol string) (*models.DropMetrics, error)
 	DetermineMarketRegime(niftyMetrics *models.DropMetrics) MarketRegime
 }
@@ -118,13 +118,18 @@ func NewAllocator(fetcher service.DataFetcher) Allocator {
 	}
 }
 
-func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, watchlist []string) ([]models.AllocationRecommendation, error) {
+func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, cashInHand float64, watchlist []string) ([]models.AllocationRecommendation, error) {
 	// 1. Get Nifty drop metrics (benchmark)
 	niftyMetrics, err := a.CalculateDropMetrics(NiftySymbol)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Nifty metrics: %v", err)
 	}
+	crashEquity := 0.0
+	if cashInHand > 0 && niftyMetrics.HighDrop > 10 {
+		// move money from cash in hand to equity
+		crashEquity = 0.3 // 30% of cash in hand to equity
 
+	}
 	// 2. Determine market regime
 	regime := a.DetermineMarketRegime(niftyMetrics)
 	allocation := RegimeAllocations[regime]
@@ -133,7 +138,13 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, wa
 
 	// 3. Calculate amounts
 	equityAmount := amount * allocation.Equity
+	// if there is a crash in nifty, move 30% of cash in hand to equity (cash in hand is already existing cash accumulated previously)
+
+	if crashEquity > 0 {
+		equityAmount += crashEquity * cashInHand
+	}
 	debtAmount := amount * allocation.Debt
+	
 
 	// 4. Distribute equity between MF and Stocks
 	stockRecs, stockTotal, err := a.distributeToStocks(equityAmount, niftyMetrics, regime)
@@ -164,7 +175,7 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, wa
 			Reason:      fmt.Sprintf("Debt allocation (%.0f%%) in %s market regime", allocation.Debt*100, regime),
 		})
 	}
-
+	
 	return recommendations, nil
 }
 
@@ -419,7 +430,7 @@ func (a *allocator) calculateStockAllocationPercent(qualifiedStocks []QualifiedS
 
 	// If average qualify score is > 4 (meaning stocks are 4x+ more down), small boost
 	if avgQualifyScore > 4.0 {
-		boost := math.Min((avgQualifyScore-4.0)*0.02, 0.10) // Max 10% boost (conservative)
+		boost := math.Min((avgQualifyScore-4.0)*0.02, 0.15) // Max 10% boost (conservative)
 		basePercent += boost
 	}
 
