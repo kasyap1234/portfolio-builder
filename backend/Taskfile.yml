@@ -1,0 +1,150 @@
+version: '3'
+
+vars:
+  BINARY_NAME: smart-alert
+  MAIN_PATH: ./cmd/server
+  DB_URL: "postgres://postgres:postgres@localhost:5432/smartalert?sslmode=disable"
+  GOOSE_MIGRATION_DIR: migrations
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the Go binary
+    cmds:
+      - go build -o bin/{{.BINARY_NAME}} {{.MAIN_PATH}}
+    sources:
+      - "**/*.go"
+    generates:
+      - bin/{{.BINARY_NAME}}
+
+  run:
+    desc: Run the application
+    cmds:
+      - go run {{.MAIN_PATH}}
+
+  dev:
+    desc: Run with hot reload using air
+    cmds:
+      - air
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test -v ./...
+
+  test:short:
+    desc: Run unit tests only
+    cmds:
+      - go test -short -v ./...
+
+  lint:
+    desc: Run linter
+    cmds:
+      - golangci-lint run
+
+  fmt:
+    desc: Format Go code
+    cmds:
+      - go fmt ./...
+
+  tidy:
+    desc: Tidy go modules
+    cmds:
+      - go mod tidy
+    sources:
+      - go.mod
+      - go.sum
+
+  deps:
+    desc: Download dependencies
+    cmds:
+      - go mod download
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -rf bin/
+      - go clean
+
+  db:up:
+    desc: Start PostgreSQL via Docker
+    cmds:
+      - docker-compose up -d postgres
+
+  db:down:
+    desc: Stop PostgreSQL
+    cmds:
+      - docker-compose down
+
+  db:logs:
+    desc: Show PostgreSQL logs
+    cmds:
+      - docker-compose logs -f postgres
+
+  goose:install:
+    desc: Install goose migration tool
+    cmds:
+      - go install github.com/pressly/goose/v3/cmd/goose@latest
+
+  goose:up:
+    desc: Run all pending migrations
+    cmds:
+      - goose -dir {{.GOOSE_MIGRATION_DIR}} postgres "{{.DB_URL}}" up
+
+  goose:up-by-one:
+    desc: Run one pending migration
+    cmds:
+      - goose -dir {{.GOOSE_MIGRATION_DIR}} postgres "{{.DB_URL}}" up-by-one
+
+  goose:down:
+    desc: Rollback one migration
+    cmds:
+      - goose -dir {{.GOOSE_MIGRATION_DIR}} postgres "{{.DB_URL}}" down
+
+  goose:down-to:
+    desc: Rollback to specific version (use: task goose:down-to -- version)
+    cmds:
+      - goose -dir {{.GOOSE_MIGRATION_DIR}} postgres "{{.DB_URL}}" down-to {{.CLI_ARGS}}
+
+  goose:redo:
+    desc: Rollback then re-run the last migration
+    cmds:
+      - goose -dir {{.GOOSE_MIGRATION_DIR}} postgres "{{.DB_URL}}" redo
+
+  goose:reset:
+    desc: Rollback all migrations
+    cmds:
+      - goose -dir {{.GOOSE_MIGRATION_DIR}} postgres "{{.DB_URL}}" reset
+
+  goose:status:
+    desc: Show migration status
+    cmds:
+      - goose -dir {{.GOOSE_MIGRATION_DIR}} postgres "{{.DB_URL}}" status
+
+  goose:version:
+    desc: Show current migration version
+    cmds:
+      - goose -dir {{.GOOSE_MIGRATION_DIR}} postgres "{{.DB_URL}}" version
+
+  goose:create:
+    desc: Create a new migration (use: task goose:create -- name)
+    cmds:
+      - goose -dir {{.GOOSE_MIGRATION_DIR}} create {{.CLI_ARGS}} sql
+
+  docker:build:
+    desc: Build Docker image
+    cmds:
+      - docker build -t smart-alert:latest .
+
+  docker:run:
+    desc: Run Docker container
+    cmds:
+      - docker-compose up --build
+
+  docker:stop:
+    desc: Stop all containers
+    cmds:
+      - docker-compose down
