@@ -13,6 +13,9 @@ type DataFetcher interface {
 	FetchHistoricalData(symbol string, rangeStr string, interval string) ([]int64, []float64, error)
 	FetchDMA200(symbol string) (float64, error)
 	FetchMarketCap(symbol string) (float64, error)
+	FetchPE(symbol string) (float64, error)
+	FetchPriceNDaysAgo(symbol string, days int) (float64, error)
+	Fetch52WeekHigh(symbol string) (float64, error)
 }
 
 // Internal implementation structs (unexported to encourage interface usage)
@@ -69,6 +72,18 @@ func (f *stockFetcher) FetchMarketCap(symbol string) (float64, error) {
 	return yahoo.FetchMarketCap(symbol)
 }
 
+func (f *stockFetcher) FetchPE(symbol string) (float64, error) {
+	return yahoo.FetchPE(symbol)
+}
+
+func (f *stockFetcher) FetchPriceNDaysAgo(symbol string, days int) (float64, error) {
+	return yahoo.FetchPriceNDaysAgo(symbol, days)
+}
+
+func (f *stockFetcher) Fetch52WeekHigh(symbol string) (float64, error) {
+	return yahoo.Fetch52WeekHigh(symbol)
+}
+
 // --- mfFetcher Implementation ---
 
 func (f *mfFetcher) FetchCurrentPrice(symbol string) (float64, error) {
@@ -86,4 +101,82 @@ func (f *mfFetcher) FetchDMA200(symbol string) (float64, error) {
 func (f *mfFetcher) FetchMarketCap(symbol string) (float64, error) {
 	// Market cap is not typically used for Mutual Funds in this context
 	return 0, fmt.Errorf("market cap not available for mutual funds")
+}
+
+func (f *mfFetcher) FetchPE(symbol string) (float64, error) {
+	// PE ratio is not typically directly applicable or available via this simple API for MFs
+	return 0, fmt.Errorf("PE ratio not available for mutual funds")
+}
+
+func (f *mfFetcher) FetchPriceNDaysAgo(symbol string, days int) (float64, error) {
+	return mf.FetchNAVNDaysAgo(symbol, days)
+}
+
+func (f *mfFetcher) Fetch52WeekHigh(symbol string) (float64, error) {
+	return mf.Fetch52WeekHigh(symbol)
+}
+
+// --- UniversalFetcher Implementation ---
+// UniversalFetcher automatically routes requests to the appropriate fetcher
+// based on symbol detection (numeric = MF, otherwise = Stock)
+
+type universalFetcher struct {
+	stockFetcher DataFetcher
+	mfFetcher    DataFetcher
+}
+
+// NewUniversalFetcher creates a fetcher that can handle both stocks and MFs
+func NewUniversalFetcher() DataFetcher {
+	return &universalFetcher{
+		stockFetcher: NewStockFetcher(),
+		mfFetcher:    NewMFFetcher(),
+	}
+}
+
+// isNumericSymbol checks if a symbol is all digits (MF AMFI code)
+func isNumericSymbol(symbol string) bool {
+	if symbol == "" {
+		return false
+	}
+	for _, r := range symbol {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *universalFetcher) getFetcher(symbol string) DataFetcher {
+	if isNumericSymbol(symbol) {
+		return f.mfFetcher
+	}
+	return f.stockFetcher
+}
+
+func (f *universalFetcher) FetchCurrentPrice(symbol string) (float64, error) {
+	return f.getFetcher(symbol).FetchCurrentPrice(symbol)
+}
+
+func (f *universalFetcher) FetchHistoricalData(symbol string, rangeStr string, interval string) ([]int64, []float64, error) {
+	return f.getFetcher(symbol).FetchHistoricalData(symbol, rangeStr, interval)
+}
+
+func (f *universalFetcher) FetchDMA200(symbol string) (float64, error) {
+	return f.getFetcher(symbol).FetchDMA200(symbol)
+}
+
+func (f *universalFetcher) FetchMarketCap(symbol string) (float64, error) {
+	return f.getFetcher(symbol).FetchMarketCap(symbol)
+}
+
+func (f *universalFetcher) FetchPE(symbol string) (float64, error) {
+	return f.getFetcher(symbol).FetchPE(symbol)
+}
+
+func (f *universalFetcher) FetchPriceNDaysAgo(symbol string, days int) (float64, error) {
+	return f.getFetcher(symbol).FetchPriceNDaysAgo(symbol, days)
+}
+
+func (f *universalFetcher) Fetch52WeekHigh(symbol string) (float64, error) {
+	return f.getFetcher(symbol).Fetch52WeekHigh(symbol)
 }

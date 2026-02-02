@@ -32,7 +32,8 @@ type chartResponse struct {
 type quoteResponse struct {
 	QuoteResponse struct {
 		Result []struct {
-			MarketCap float64 `json:"marketCap"`
+			MarketCap  float64 `json:"marketCap"`
+			TrailingPE float64 `json:"trailingPE"`
 		} `json:"result"`
 		Error interface{} `json:"error"`
 	} `json:"quoteResponse"`
@@ -99,6 +100,51 @@ func FetchMarketCap(symbol string) (float64, error) {
 	return data.QuoteResponse.Result[0].MarketCap, nil
 }
 
+// FetchPE retrieves the trailing PE ratio for a given symbol.
+func FetchPE(symbol string) (float64, error) {
+	if symbol == "" {
+		return 0, errors.New("symbol cannot be empty")
+	}
+
+	url := fmt.Sprintf("https://query1.finance.yahoo.com/v7/finance/quote?symbols=%s", symbol)
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("failed to fetch data: status code %d", resp.StatusCode)
+	}
+
+	var data quoteResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return 0, fmt.Errorf("error decoding response: %v", err)
+	}
+
+	if data.QuoteResponse.Error != nil {
+		return 0, fmt.Errorf("yahoo finance error: %v", data.QuoteResponse.Error)
+	}
+
+	if len(data.QuoteResponse.Result) == 0 {
+		return 0, fmt.Errorf("no data found for symbol %s", symbol)
+	}
+
+	return data.QuoteResponse.Result[0].TrailingPE, nil
+}
+
 // FetchHistoricalData retrieves historical timestamps and closing prices for a given range and interval.
 // Example range: "5d", "1mo", "1y", "2y", "max"
 // Example interval: "1m", "5m", "1d", "1wk", "1mo"
@@ -156,6 +202,69 @@ func FetchDMA200(symbol string) (float64, error) {
 	}
 
 	return sum / float64(count), nil
+}
+
+// FetchPriceNDaysAgo retrieves the closing price from approximately N days ago
+func FetchPriceNDaysAgo(symbol string, days int) (float64, error) {
+	rangeStr := "1mo"
+	if days > 30 {
+		rangeStr = "3mo"
+	}
+	if days > 90 {
+		rangeStr = "1y"
+	}
+
+	_, prices, err := FetchHistoricalData(symbol, rangeStr, "1d")
+	if err != nil {
+		return 0, err
+	}
+
+	// Filter out zero/invalid prices
+	var validPrices []float64
+	for _, p := range prices {
+		if p > 0 {
+			validPrices = append(validPrices, p)
+		}
+	}
+
+	if len(validPrices) == 0 {
+		return 0, fmt.Errorf("no valid prices found for %s", symbol)
+	}
+
+	// Get the price from approximately N days ago
+	// Trading days are roughly 5 per week, so approximate index
+	targetIndex := len(validPrices) - 1 - days
+	if targetIndex < 0 {
+		targetIndex = 0
+	}
+
+	return validPrices[targetIndex], nil
+}
+
+// FetchRecentHigh retrieves the highest price in the given range (e.g., "1y" for 52-week high)
+func FetchRecentHigh(symbol string, rangeStr string) (float64, error) {
+	_, prices, err := FetchHistoricalData(symbol, rangeStr, "1d")
+	if err != nil {
+		return 0, err
+	}
+
+	highest := 0.0
+	for _, p := range prices {
+		if p > highest {
+			highest = p
+		}
+	}
+
+	if highest == 0 {
+		return 0, fmt.Errorf("no valid prices found for %s", symbol)
+	}
+
+	return highest, nil
+}
+
+// Fetch52WeekHigh is a convenience function for getting the 52-week high
+func Fetch52WeekHigh(symbol string) (float64, error) {
+	return FetchRecentHigh(symbol, "1y")
 }
 
 // fetchChartData is a private helper to perform the external API call
