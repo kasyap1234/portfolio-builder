@@ -136,7 +136,7 @@ func TestAllocate_DeepFear_WithQualifyingStock(t *testing.T) {
 	// Setup MF
 	setupMFMocks(mockFetcher, "150346")
 
-	recs, err := allocator.Allocate(10000, nil, nil)
+	recs, err := allocator.Allocate(10000, nil, 0, nil)
 
 	assert.NoError(t, err)
 
@@ -180,7 +180,7 @@ func TestAllocate_Greed_AllToDebt(t *testing.T) {
 	// Setup MF
 	setupMFMocks(mockFetcher, "150346")
 
-	recs, err := allocator.Allocate(10000, nil, nil)
+	recs, err := allocator.Allocate(10000, nil, 0, nil)
 
 	assert.NoError(t, err)
 
@@ -232,7 +232,7 @@ func TestAllocate_Fear_StockQualifiesSharpDrop(t *testing.T) {
 	// Setup MF
 	setupMFMocks(mockFetcher, "150346")
 
-	recs, err := allocator.Allocate(10000, nil, nil)
+	recs, err := allocator.Allocate(10000, nil, 0, nil)
 
 	assert.NoError(t, err)
 
@@ -294,4 +294,45 @@ func TestRiskWeightByMarketCap(t *testing.T) {
 			assert.Equal(t, tt.wantWeight, weight)
 		})
 	}
+}
+
+func TestAllocate_DeepFear_DeploysDebtReserve(t *testing.T) {
+	mockFetcher := new(MockDataFetcher)
+	allocator := NewAllocator(mockFetcher)
+
+	// Setup Nifty - 15% below DMA (Deep Fear)
+	setupNiftyMocks(mockFetcher, 13600, 16000, 14500, 15000, 17000)
+
+	// Setup one qualifying stock
+	setupQualifyingStockMocks(mockFetcher, "RELIANCE.NS", 1500000000000)
+
+	// Setup non-qualifying stocks
+	for _, stock := range []string{"CIPLA.NS", "HAVELLS.NS", "ICICIBANK.NS", "SHRIRAMFIN.NS", "RAINBOW.NS", "KPITTECH.NS", "SENCO.NS", "ZAGGLE.NS", "CAMS.NS", "BAJFINANCE.NS"} {
+		setupNonQualifyingStockMocks(mockFetcher, stock)
+	}
+
+	// Setup MF
+	setupMFMocks(mockFetcher, "150346")
+
+	// Allocate with debt reserve
+	debtReserve := 100000.0 // ₹1 lakh debt reserve
+	recs, err := allocator.Allocate(10000, nil, debtReserve, nil)
+
+	assert.NoError(t, err)
+
+	// Find panic buy recommendations
+	var niftyETFAmount, whiteoakAmount float64
+	for _, r := range recs {
+		if r.AssetSymbol == Nifty50ETFSymbol {
+			niftyETFAmount = r.Amount
+		}
+		if r.AssetSymbol == WhiteoakFlexiCapCode && r.Reason[:9] == "PANIC BUY" {
+			whiteoakAmount = r.Amount
+		}
+	}
+
+	// 50% of debt reserve = 50000, split 50-50 = 25000 each
+	expectedDeployment := debtReserve * DebtReserveDeploymentPct / 2
+	assert.InDelta(t, expectedDeployment, niftyETFAmount, 1.0, "Nifty50 ETF should get 50% of deployment")
+	assert.InDelta(t, expectedDeployment, whiteoakAmount, 1.0, "Whiteoak should get 50% of deployment")
 }

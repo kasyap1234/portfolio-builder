@@ -39,12 +39,13 @@ func main() {
 	fmt.Printf("Market Regime: %s\n", regime)
 	fmt.Println()
 
-	// Example SIP amount
+	// Example SIP amount and debt reserve
 	sipAmount := 35000.0
-	fmt.Printf("=== SIP Allocation for ₹%.0f ===\n", sipAmount)
+	debtReserve := 100000.0 // Example: ₹1 lakh in debt reserve for panic buying
+	fmt.Printf("=== SIP Allocation for ₹%.0f (Debt Reserve: ₹%.0f) ===\n", sipAmount, debtReserve)
 	fmt.Println()
 
-	recommendations, err := alloc.Allocate(sipAmount, nil, nil)
+	recommendations, err := alloc.Allocate(sipAmount, nil, debtReserve, nil)
 	if err != nil {
 		log.Fatalf("Allocation failed: %v", err)
 	}

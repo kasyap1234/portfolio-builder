@@ -1,9 +1,9 @@
-FROM golang:1.25.6-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
 # Install dependencies
-RUN apk add --no-cache git
+RUN apk add --no-cache git ca-certificates tzdata
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -13,17 +13,19 @@ RUN go mod download
 COPY . .
 
 # Build
-RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -o sip-allocator ./cmd/server
 
-# Final stage
-FROM alpine:latest
+# Final stage - minimal image
+FROM scratch
 
-RUN apk --no-cache add ca-certificates
+# Copy timezone data and certs
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-WORKDIR /root/
+# Copy binary
+COPY --from=builder /app/sip-allocator /sip-allocator
 
-COPY --from=builder /app/server .
+# Set timezone
+ENV TZ=Asia/Kolkata
 
-EXPOSE 8080
-
-CMD ["./server"]
+ENTRYPOINT ["/sip-allocator"]

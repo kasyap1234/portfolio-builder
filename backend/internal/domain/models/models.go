@@ -1,11 +1,16 @@
 package models
 
+import (
+	"time"
+)
+
 type AssetType string
 
 const (
 	AssetTypeStock AssetType = "STOCK"
 	AssetTypeMF    AssetType = "MF"
 	AssetTypeIndex AssetType = "INDEX" // For Nifty 50
+	AssetTypeETF   AssetType = "ETF"   // For Nifty50 ETF
 	AssetTypeDebt  AssetType = "DEBT"
 )
 
@@ -72,3 +77,55 @@ func (d *DropMetrics) CalculateCompositeScore() float64 {
 func (d *DropMetrics) IsMoreDownThan(ref *DropMetrics) bool {
 	return d.CompositeScore > ref.CompositeScore
 }
+
+// TradeLog represents a single transaction record
+type TradeLog struct {
+	ID              int64
+	AssetID         int64
+	TransactionDate time.Time
+	TransactionType string  // BUY, SELL, DIVIDEND
+	Amount          float64 // INR amount
+	Units           float64 // Units purchased
+	PricePerUnit    float64
+	AssetCategory   string // EQUITY, DEBT, ETF, MF
+	Notes           string
+	CreatedAt       time.Time
+}
+
+// AllocationSnapshot captures portfolio state at a point in time
+type AllocationSnapshot struct {
+	ID                  int64
+	SnapshotDate        time.Time
+	TotalEquityAmount   float64
+	TotalDebtAmount     float64
+	EquityAllocationPct float64
+	DebtAllocationPct   float64
+	MarketRegime        string
+	NiftyDMADistance    float64
+	CreatedAt           time.Time
+}
+
+// DebtReserve tracks additional cash for panic buying deployment
+type DebtReserve struct {
+	ID                 int64
+	TotalAmount        float64
+	DeployedAmount     float64
+	AvailableAmount    float64
+	LastDeploymentDate *time.Time
+	UpdatedAt          time.Time
+}
+
+// Transaction type constants
+const (
+	TransactionTypeBuy      = "BUY"
+	TransactionTypeSell     = "SELL"
+	TransactionTypeDividend = "DIVIDEND"
+)
+
+// Asset category constants
+const (
+	CategoryEquity = "EQUITY"
+	CategoryDebt   = "DEBT"
+	CategoryETF    = "ETF"
+	CategoryMF     = "MF"
+)

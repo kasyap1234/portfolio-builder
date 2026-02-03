@@ -47,6 +47,18 @@ var MFWatchlist = []string{
 // Nifty 50 symbol for Yahoo Finance
 const NiftySymbol = "^NSEI"
 
+// Nifty50 ETF for panic buying deployment
+const Nifty50ETFSymbol = "NIFTY50-ETF" // Nippon India ETF Nifty 50 BeES
+
+// WhiteOak Flexi Cap Fund AMFI code
+const WhiteoakFlexiCapCode = "150346"
+
+// Debt reserve deployment percentage during DEEP_FEAR
+const DebtReserveDeploymentPct = 0.50 // Deploy 50% of debt reserve in DEEP_FEAR
+
+// Debt reserve deployment percentage during FEAR
+const DebtReserveFearDeploymentPct = 0.02 // Deploy 2% of debt reserve in FEAR
+
 // ============================================
 // Market Regime Based Allocation Constants
 // ============================================
@@ -124,29 +136,55 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Nifty metrics: %v", err)
 	}
-	crashEquity := 0.0
-	if cashInHand > 0 && niftyMetrics.HighDrop > 10 {
-		// move money from cash in hand to equity
-		crashEquity = 0.3 // 30% of cash in hand to equity
 
-	}
 	// 2. Determine market regime
 	regime := a.DetermineMarketRegime(niftyMetrics)
 	allocation := RegimeAllocations[regime]
 
 	recommendations := []models.AllocationRecommendation{}
 
-	// 3. Calculate amounts
+	// 3. Calculate base amounts
 	equityAmount := amount * allocation.Equity
-	// if there is a crash in nifty, move 30% of cash in hand to equity (cash in hand is already existing cash accumulated previously)
-
-	if crashEquity > 0 {
-		equityAmount += crashEquity * cashInHand
-	}
 	debtAmount := amount * allocation.Debt
-	
 
-	// 4. Distribute equity between MF and Stocks
+	// 4. Deploy debt reserve based on market regime
+	// DEEP_FEAR: Deploy 50%, FEAR: Deploy 2% (50-50 split: Nifty50 ETF + Whiteoak)
+	if cashInHand > 0 {
+		var deploymentPct float64
+		var regimeLabel string
+
+		switch regime {
+		case RegimeDeepFear:
+			deploymentPct = DebtReserveDeploymentPct
+			regimeLabel = "DEEP_FEAR"
+		case RegimeFear:
+			deploymentPct = DebtReserveFearDeploymentPct
+			regimeLabel = "FEAR"
+		}
+
+		if deploymentPct > 0 {
+			debtDeployment := cashInHand * deploymentPct
+			halfDeployment := debtDeployment / 2
+
+			// Nifty50 ETF allocation (50% of deployment)
+			recommendations = append(recommendations, models.AllocationRecommendation{
+				AssetSymbol: Nifty50ETFSymbol,
+				AssetType:   models.AssetTypeETF,
+				Amount:      halfDeployment,
+				Reason:      fmt.Sprintf("PANIC BUY: Deploying %.0f%% of debt reserve (₹%.0f) to Nifty50 ETF. Market in %s (DMA: %.1f%%)", deploymentPct*100, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
+			})
+
+			// Whiteoak Flexi Cap Fund allocation (50% of deployment)
+			recommendations = append(recommendations, models.AllocationRecommendation{
+				AssetSymbol: WhiteoakFlexiCapCode,
+				AssetType:   models.AssetTypeMF,
+				Amount:      halfDeployment,
+				Reason:      fmt.Sprintf("PANIC BUY: Deploying %.0f%% of debt reserve (₹%.0f) to Whiteoak Flexi Cap. Market in %s (DMA: %.1f%%)", deploymentPct*100, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
+			})
+		}
+	}
+
+	// 5. Distribute equity between MF and Stocks
 	stockRecs, stockTotal, err := a.distributeToStocks(equityAmount, niftyMetrics, regime)
 	if err != nil {
 		stockTotal = 0
@@ -155,18 +193,18 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 	// Remaining equity goes to MF
 	mfAmount := equityAmount - stockTotal
 
-	// 5. MF allocation
+	// 6. MF allocation
 	if mfAmount > 0 {
 		mfRecs := a.distributeMFAllocation(mfAmount, niftyMetrics, regime)
 		recommendations = append(recommendations, mfRecs...)
 	}
 
-	// 6. Stock allocations
+	// 7. Stock allocations
 	if len(stockRecs) > 0 {
 		recommendations = append(recommendations, stockRecs...)
 	}
 
-	// 7. Debt allocation
+	// 8. Debt allocation
 	if debtAmount > 0 {
 		recommendations = append(recommendations, models.AllocationRecommendation{
 			AssetSymbol: "DEBT_BUCKET",
@@ -175,7 +213,7 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 			Reason:      fmt.Sprintf("Debt allocation (%.0f%%) in %s market regime", allocation.Debt*100, regime),
 		})
 	}
-	
+
 	return recommendations, nil
 }
 

@@ -13,9 +13,10 @@ func NewWealthCalculator() WealthCalculator {
 }
 
 func (w *wealthCalculator) CalculateExistingWealth() {
+	// equity + debt
 
 }
 
 func (w *wealthCalculator) CalculateExistingDebt() {
-
+	// only debt
 }
