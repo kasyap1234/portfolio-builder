@@ -59,6 +59,10 @@ const DebtReserveDeploymentPct = 0.50 // Deploy 50% of debt reserve in DEEP_FEAR
 // Debt reserve deployment percentage during FEAR
 const DebtReserveFearDeploymentPct = 0.02 // Deploy 2% of debt reserve in FEAR
 
+// PE based deployment
+const PETriggerThreshold = 19.0 // Trigger bulk buy when PE <= 19
+const PEDeploymentPct = 0.30    // Deploy 30% of debt reserve
+
 // ============================================
 // Market Regime Based Allocation Constants
 // ============================================
@@ -180,6 +184,19 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 				AssetType:   models.AssetTypeMF,
 				Amount:      halfDeployment,
 				Reason:      fmt.Sprintf("PANIC BUY: Deploying %.0f%% of debt reserve (₹%.0f) to Whiteoak Flexi Cap. Market in %s (DMA: %.1f%%)", deploymentPct*100, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
+			})
+		}
+
+		// 4.1 Check Nifty PE Trigger (Independent and Additive)
+		// Fetch current Nifty PE
+		niftyPE, peErr := a.fetcher.FetchPE(NiftySymbol)
+		if peErr == nil && niftyPE <= PETriggerThreshold {
+			peDeployment := cashInHand * PEDeploymentPct
+			recommendations = append(recommendations, models.AllocationRecommendation{
+				AssetSymbol: Nifty50ETFSymbol,
+				AssetType:   models.AssetTypeETF,
+				Amount:      peDeployment,
+				Reason:      fmt.Sprintf("PE_TRIGGER: Nifty PE at %.2f (<= %.1f). Bulk buying Nifty50 ETF with 30%% of debt reserve (₹%.0f)", niftyPE, PETriggerThreshold, peDeployment),
 			})
 		}
 	}

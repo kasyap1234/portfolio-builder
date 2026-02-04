@@ -59,8 +59,11 @@ func main() {
 		regime = string(alloc.DetermineMarketRegime(niftyMetrics))
 	}
 
+	// Fetch Nifty PE for notification
+	niftyPE, _ := fetcher.FetchPE("^NSEI")
+
 	// Format message
-	message := telegram.FormatRecommendations(recs, regime, cfg.MonthlySIPAmount)
+	message := telegram.FormatRecommendations(recs, regime, cfg.MonthlySIPAmount, niftyPE)
 
 	// Send to Telegram
 	notifier, err := telegram.NewNotifier(cfg.TelegramBotToken, cfg.TelegramChatID)
@@ -73,6 +76,7 @@ func main() {
 	}
 
 	log.Println("Monthly allocation sent to Telegram successfully")
+	log.Printf("Current Nifty PE: %.2f", niftyPE)
 	printSummary(recs, cfg.MonthlySIPAmount)
 }
 

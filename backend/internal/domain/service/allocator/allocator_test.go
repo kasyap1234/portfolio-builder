@@ -2,6 +2,7 @@ package allocator
 
 import (
 	"smart-alert/internal/domain/models"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -49,12 +50,13 @@ func (m *MockDataFetcher) Fetch52WeekHigh(symbol string) (float64, error) {
 }
 
 // Helper to setup Nifty mocks
-func setupNiftyMocks(m *MockDataFetcher, currentPrice, dma200, weekAgo, monthAgo, high float64) {
+func setupNiftyMocks(m *MockDataFetcher, currentPrice, dma200, weekAgo, monthAgo, high float64, pe float64) {
 	m.On("FetchCurrentPrice", "^NSEI").Return(currentPrice, nil)
 	m.On("FetchDMA200", "^NSEI").Return(dma200, nil)
 	m.On("FetchPriceNDaysAgo", "^NSEI", 7).Return(weekAgo, nil)
 	m.On("FetchPriceNDaysAgo", "^NSEI", 22).Return(monthAgo, nil)
 	m.On("Fetch52WeekHigh", "^NSEI").Return(high, nil)
+	m.On("FetchPE", "^NSEI").Return(pe, nil)
 }
 
 // Helper to setup stock mock that doesn't qualify (not down enough)
@@ -123,7 +125,7 @@ func TestAllocate_DeepFear_WithQualifyingStock(t *testing.T) {
 
 	// Setup Nifty - 15% below DMA (Clearly Deep Fear: > 10% threshold)
 	// DMADistance = (16000 - 13600) / 16000 * 100 = 15%
-	setupNiftyMocks(mockFetcher, 13600, 16000, 14500, 15000, 17000)
+	setupNiftyMocks(mockFetcher, 13600, 16000, 14500, 15000, 17000, 22.0)
 
 	// Setup one qualifying stock (RELIANCE - Large Cap, very down)
 	setupQualifyingStockMocks(mockFetcher, "RELIANCE.NS", 1500000000000) // Large cap
@@ -170,7 +172,7 @@ func TestAllocate_Greed_AllToDebt(t *testing.T) {
 	allocator := NewAllocator(mockFetcher)
 
 	// Setup Nifty - 10% above DMA (Greed)
-	setupNiftyMocks(mockFetcher, 17600, 16000, 17400, 17200, 18000)
+	setupNiftyMocks(mockFetcher, 17600, 16000, 17400, 17200, 18000, 25.0)
 
 	// Setup all stocks as non-qualifying (not down enough)
 	for _, stock := range StockWatchlist {
@@ -214,7 +216,7 @@ func TestAllocate_Fear_StockQualifiesSharpDrop(t *testing.T) {
 	allocator := NewAllocator(mockFetcher)
 
 	// Setup Nifty - 5% below DMA (Fear)
-	setupNiftyMocks(mockFetcher, 15200, 16000, 15500, 15800, 17000)
+	setupNiftyMocks(mockFetcher, 15200, 16000, 15500, 15800, 17000, 20.0)
 
 	// Setup RELIANCE with sharp weekly drop (qualifies)
 	mockFetcher.On("FetchCurrentPrice", "RELIANCE.NS").Return(85.0, nil)
@@ -251,7 +253,7 @@ func TestCalculateDropMetrics(t *testing.T) {
 	mockFetcher := new(MockDataFetcher)
 	allocator := NewAllocator(mockFetcher)
 
-	setupNiftyMocks(mockFetcher, 15000, 16000, 15500, 16000, 17000)
+	setupNiftyMocks(mockFetcher, 15000, 16000, 15500, 16000, 17000, 21.0)
 
 	metrics, err := allocator.CalculateDropMetrics("^NSEI")
 
@@ -301,7 +303,7 @@ func TestAllocate_DeepFear_DeploysDebtReserve(t *testing.T) {
 	allocator := NewAllocator(mockFetcher)
 
 	// Setup Nifty - 15% below DMA (Deep Fear)
-	setupNiftyMocks(mockFetcher, 13600, 16000, 14500, 15000, 17000)
+	setupNiftyMocks(mockFetcher, 13600, 16000, 14500, 15000, 17000, 22.0)
 
 	// Setup one qualifying stock
 	setupQualifyingStockMocks(mockFetcher, "RELIANCE.NS", 1500000000000)
@@ -335,4 +337,40 @@ func TestAllocate_DeepFear_DeploysDebtReserve(t *testing.T) {
 	expectedDeployment := debtReserve * DebtReserveDeploymentPct / 2
 	assert.InDelta(t, expectedDeployment, niftyETFAmount, 1.0, "Nifty50 ETF should get 50% of deployment")
 	assert.InDelta(t, expectedDeployment, whiteoakAmount, 1.0, "Whiteoak should get 50% of deployment")
+}
+
+func TestAllocate_PETrigger_Deploys30Percent(t *testing.T) {
+	mockFetcher := new(MockDataFetcher)
+	allocator := NewAllocator(mockFetcher)
+
+	// Setup Nifty - Neutral regime (no panic buy from DMA), but PE = 18.0 (Trigger!)
+	setupNiftyMocks(mockFetcher, 16000, 16000, 16000, 16000, 16500, 18.0)
+
+	// Setup non-qualifying stocks
+	for _, stock := range StockWatchlist {
+		setupNonQualifyingStockMocks(mockFetcher, stock)
+	}
+
+	// Setup MF
+	setupMFMocks(mockFetcher, "150346")
+
+	// Allocate with debt reserve
+	debtReserve := 100000.0 // ₹1 lakh
+	recs, err := allocator.Allocate(10000, nil, debtReserve, nil)
+
+	assert.NoError(t, err)
+
+	// Verify PE trigger deployment
+	var peTriggerAmount float64
+	foundPETrigger := false
+	for _, r := range recs {
+		if r.AssetSymbol == Nifty50ETFSymbol && strings.HasPrefix(r.Reason, "PE_TRIGGER") {
+			peTriggerAmount = r.Amount
+			foundPETrigger = true
+		}
+	}
+
+	assert.True(t, foundPETrigger, "Should have PE trigger recommendation")
+	// 30% of 100000 = 30000
+	assert.InDelta(t, 30000.0, peTriggerAmount, 1.0, "PE trigger should deploy 30% of debt reserve")
 }

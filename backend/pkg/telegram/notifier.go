@@ -33,18 +33,23 @@ func (n *Notifier) SendMessage(text string) error {
 }
 
 // FormatRecommendations converts allocation recommendations to a formatted message
-func FormatRecommendations(recs []models.AllocationRecommendation, regime string, totalAmount float64) string {
+func FormatRecommendations(recs []models.AllocationRecommendation, regime string, totalAmount float64, niftyPE float64) string {
 	var sb strings.Builder
 
 	sb.WriteString("📊 *Monthly SIP Allocation*\n")
 	sb.WriteString(fmt.Sprintf("💰 Amount: ₹%.0f\n", totalAmount))
+	if niftyPE > 0 {
+		sb.WriteString(fmt.Sprintf("📉 Nifty PE: *%.2f*\n", niftyPE))
+	}
 	sb.WriteString(fmt.Sprintf("📈 Market Regime: *%s*\n\n", regime))
 
 	// Group by type
-	var equityRecs, debtRecs, panicRecs []models.AllocationRecommendation
+	var equityRecs, debtRecs, panicRecs, peRecs []models.AllocationRecommendation
 	for _, r := range recs {
 		if strings.HasPrefix(r.Reason, "PANIC BUY") {
 			panicRecs = append(panicRecs, r)
+		} else if strings.HasPrefix(r.Reason, "PE_TRIGGER") {
+			peRecs = append(peRecs, r)
 		} else if r.AssetType == models.AssetTypeDebt {
 			debtRecs = append(debtRecs, r)
 		} else {
@@ -56,6 +61,15 @@ func FormatRecommendations(recs []models.AllocationRecommendation, regime string
 	if len(panicRecs) > 0 {
 		sb.WriteString("🚨 *PANIC BUY DEPLOYMENT*\n")
 		for _, r := range panicRecs {
+			sb.WriteString(fmt.Sprintf("  • %s: ₹%.0f\n", r.AssetSymbol, r.Amount))
+		}
+		sb.WriteString("\n")
+	}
+
+	// PE Trigger buys (if any)
+	if len(peRecs) > 0 {
+		sb.WriteString("📉 *PE TRIGGER ACTIVATED*\n")
+		for _, r := range peRecs {
 			sb.WriteString(fmt.Sprintf("  • %s: ₹%.0f\n", r.AssetSymbol, r.Amount))
 		}
 		sb.WriteString("\n")

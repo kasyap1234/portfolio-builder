@@ -26,6 +26,7 @@ type Config struct {
 type Scheduler struct {
 	config    Config
 	allocator allocator.Allocator
+	fetcher   service.DataFetcher
 	notifier  *telegram.Notifier
 	cron      *cron.Cron
 }
@@ -49,6 +50,7 @@ func NewScheduler(config Config) (*Scheduler, error) {
 	return &Scheduler{
 		config:    config,
 		allocator: alloc,
+		fetcher:   fetcher,
 		notifier:  notifier,
 		cron:      c,
 	}, nil
@@ -110,8 +112,11 @@ func (s *Scheduler) runMonthlyAllocation() {
 		regime = string(s.allocator.DetermineMarketRegime(niftyMetrics))
 	}
 
+	// Get Nifty PE for notification
+	niftyPE, _ := s.fetcher.FetchPE("^NSEI")
+
 	// Format and send message
-	message := telegram.FormatRecommendations(recs, regime, s.config.MonthlySIPAmount)
+	message := telegram.FormatRecommendations(recs, regime, s.config.MonthlySIPAmount, niftyPE)
 	if err := s.notifier.SendMessage(message); err != nil {
 		log.Printf("Failed to send Telegram message: %v", err)
 		return

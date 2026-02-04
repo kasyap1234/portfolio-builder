@@ -9,11 +9,12 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	DatabaseURL      string
-	TelegramBotToken string
-	TelegramChatID   int64
-	MonthlySIPAmount float64
-	DebtReserve      float64
+	DatabaseURL        string
+	TelegramBotToken   string
+	TelegramChatID     int64
+	MonthlySIPAmount   float64
+	DebtReserve        float64
+	PETriggerThreshold float64
 }
 
 // LoadEnv loads environment variables from .env file
@@ -31,12 +32,17 @@ func LoadConfig() *Config {
 		sipAmount = 35000 // Default ₹35k
 	}
 	debtReserve, _ := strconv.ParseFloat(os.Getenv("DEBT_RESERVE"), 64)
+	peThreshold, _ := strconv.ParseFloat(os.Getenv("PE_TRIGGER_THRESHOLD"), 64)
+	if peThreshold == 0 {
+		peThreshold = 19.0 // Default to 19.0
+	}
 
 	return &Config{
-		DatabaseURL:      os.Getenv("DATABASE_URL"),
-		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramChatID:   chatID,
-		MonthlySIPAmount: sipAmount,
-		DebtReserve:      debtReserve,
+		DatabaseURL:        os.Getenv("DATABASE_URL"),
+		TelegramBotToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramChatID:     chatID,
+		MonthlySIPAmount:   sipAmount,
+		DebtReserve:        debtReserve,
+		PETriggerThreshold: peThreshold,
 	}
 }
