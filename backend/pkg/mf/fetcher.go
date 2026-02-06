@@ -159,7 +159,8 @@ func FetchDMA200(schemeCode string) (float64, error) {
 	return sum / 200.0, nil
 }
 
-// FetchNAVNDaysAgo retrieves the NAV from approximately N days ago
+// FetchNAVNDaysAgo retrieves the NAV from approximately N calendar days ago.
+// It finds the entry closest to (but not after) the target calendar date.
 func FetchNAVNDaysAgo(schemeCode string, days int) (float64, error) {
 	url := fmt.Sprintf("https://api.mfapi.in/mf/%s", schemeCode)
 	data, err := fetchMFData(url)
@@ -167,21 +168,39 @@ func FetchNAVNDaysAgo(schemeCode string, days int) (float64, error) {
 		return 0, err
 	}
 
-	if len(data.Data) <= days {
-		// Not enough data, return the oldest available
-		if len(data.Data) > 0 {
-			nav, err := strconv.ParseFloat(data.Data[len(data.Data)-1].Nav, 64)
-			if err != nil {
-				return 0, fmt.Errorf("error parsing NAV: %v", err)
-			}
-			return nav, nil
-		}
+	if len(data.Data) == 0 {
 		return 0, fmt.Errorf("no NAV data found for scheme %s", schemeCode)
 	}
 
-	// MF API returns data in reverse chronological order (newest first)
-	// Index 0 = today, index 7 = ~7 days ago (accounting for weekends)
-	nav, err := strconv.ParseFloat(data.Data[days].Nav, 64)
+	targetDate := time.Now().AddDate(0, 0, -days)
+
+	bestNav := ""
+	bestDiff := time.Duration(-1)
+
+	for _, d := range data.Data {
+		t, err := time.Parse("02-01-2006", d.Date)
+		if err != nil {
+			continue
+		}
+		if t.After(targetDate) {
+			continue
+		}
+		diff := targetDate.Sub(t)
+		if bestDiff < 0 || diff < bestDiff {
+			bestDiff = diff
+			bestNav = d.Nav
+		}
+	}
+
+	if bestNav == "" {
+		nav, err := strconv.ParseFloat(data.Data[len(data.Data)-1].Nav, 64)
+		if err != nil {
+			return 0, fmt.Errorf("error parsing NAV: %v", err)
+		}
+		return nav, nil
+	}
+
+	nav, err := strconv.ParseFloat(bestNav, 64)
 	if err != nil {
 		return 0, fmt.Errorf("error parsing NAV: %v", err)
 	}

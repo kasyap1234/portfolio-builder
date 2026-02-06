@@ -97,10 +97,14 @@ func TestDetermineMarketRegime(t *testing.T) {
 	}{
 		{"Deep Fear - 15% below DMA", 15.0, RegimeDeepFear},
 		{"Deep Fear - 10% below DMA", 10.0, RegimeDeepFear},
-		{"Fear - 5% below DMA", 5.0, RegimeFear},
-		{"Fear - 1% below DMA", 1.0, RegimeFear},
+		{"Fear - 8% below DMA", 8.0, RegimeFear},
+		{"Fear - 6% below DMA", 6.0, RegimeFear},
+		{"Neutral - 5% below DMA", 5.0, RegimeNeutral},
+		{"Neutral - 3% below DMA", 3.0, RegimeNeutral},
+		{"Neutral - 1% below DMA", 1.0, RegimeNeutral},
 		{"Neutral - at DMA", 0.0, RegimeNeutral},
 		{"Neutral - 3% above DMA", -3.0, RegimeNeutral},
+		{"Neutral - 5% above DMA", -5.0, RegimeNeutral},
 		{"Greed - 6% above DMA", -6.0, RegimeGreed},
 		{"Greed - 10% above DMA", -10.0, RegimeGreed},
 	}
@@ -215,8 +219,9 @@ func TestAllocate_Fear_StockQualifiesSharpDrop(t *testing.T) {
 	mockFetcher := new(MockDataFetcher)
 	allocator := NewAllocator(mockFetcher)
 
-	// Setup Nifty - 5% below DMA (Fear)
-	setupNiftyMocks(mockFetcher, 15200, 16000, 15500, 15800, 17000, 20.0)
+	// Setup Nifty - 8% below DMA (Fear: >5% but <10%)
+	// DMADistance = (16000 - 14720) / 16000 * 100 = 8%
+	setupNiftyMocks(mockFetcher, 14720, 16000, 15200, 15500, 17000, 20.0)
 
 	// Setup RELIANCE with sharp weekly drop (qualifies)
 	mockFetcher.On("FetchCurrentPrice", "RELIANCE.NS").Return(85.0, nil)
@@ -328,7 +333,7 @@ func TestAllocate_DeepFear_DeploysDebtReserve(t *testing.T) {
 		if r.AssetSymbol == Nifty50ETFSymbol {
 			niftyETFAmount = r.Amount
 		}
-		if r.AssetSymbol == WhiteoakFlexiCapCode && r.Reason[:9] == "PANIC BUY" {
+		if r.AssetSymbol == WhiteoakFlexiCapCode && strings.HasPrefix(r.Reason, "PANIC BUY") {
 			whiteoakAmount = r.Amount
 		}
 	}

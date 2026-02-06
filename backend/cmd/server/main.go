@@ -37,9 +37,9 @@ func main() {
 
 	log.Println("First trading day of month detected - running allocation")
 
-	// Create allocator
+	// Create allocator with config
 	fetcher := service.NewUniversalFetcher()
-	alloc := allocator.NewAllocator(fetcher)
+	alloc := allocator.NewAllocator(fetcher, allocator.WithPETriggerThreshold(cfg.PETriggerThreshold))
 
 	// Get allocation recommendations
 	recs, err := alloc.Allocate(
@@ -52,15 +52,20 @@ func main() {
 		log.Fatalf("Allocation failed: %v", err)
 	}
 
-	// Get market regime
-	niftyMetrics, _ := alloc.CalculateDropMetrics("^NSEI")
+	// Determine regime from the same metrics used during allocation
+	niftyMetrics, err := alloc.CalculateDropMetrics("^NSEI")
 	regime := "UNKNOWN"
-	if niftyMetrics != nil {
+	if err != nil {
+		log.Printf("Warning: failed to fetch Nifty metrics for display: %v", err)
+	} else {
 		regime = string(alloc.DetermineMarketRegime(niftyMetrics))
 	}
 
 	// Fetch Nifty PE for notification
-	niftyPE, _ := fetcher.FetchPE("^NSEI")
+	niftyPE, err := fetcher.FetchPE("^NSEI")
+	if err != nil {
+		log.Printf("Warning: failed to fetch Nifty PE: %v", err)
+	}
 
 	// Format message
 	message := telegram.FormatRecommendations(recs, regime, cfg.MonthlySIPAmount, niftyPE)
@@ -76,14 +81,30 @@ func main() {
 	}
 
 	log.Println("Monthly allocation sent to Telegram successfully")
-	log.Printf("Current Nifty PE: %.2f", niftyPE)
+	if niftyPE > 0 {
+		log.Printf("Current Nifty PE: %.2f", niftyPE)
+	}
 	printSummary(recs, cfg.MonthlySIPAmount)
 }
 
-func printSummary(recs []models.AllocationRecommendation, total float64) {
+func printSummary(recs []models.AllocationRecommendation, sipAmount float64) {
 	log.Println("=== Allocation Summary ===")
+	var sipTotal, reserveTotal float64
 	for _, r := range recs {
 		log.Printf("  %s (%s): ₹%.0f", r.AssetSymbol, r.AssetType, r.Amount)
+		if r.AssetType == models.AssetTypeDebt || r.AssetType == models.AssetTypeMF || r.AssetType == models.AssetTypeStock {
+			// Exclude panic buy / PE trigger (reserve deployments) from SIP total
+			if len(r.Reason) >= 9 && (r.Reason[:9] == "PANIC BUY" || r.Reason[:10] == "PE_TRIGGER") {
+				reserveTotal += r.Amount
+			} else {
+				sipTotal += r.Amount
+			}
+		} else if r.AssetType == models.AssetTypeETF {
+			reserveTotal += r.Amount
+		}
 	}
-	log.Printf("Total: ₹%.0f", total)
+	log.Printf("SIP Total: ₹%.0f (budget: ₹%.0f)", sipTotal, sipAmount)
+	if reserveTotal > 0 {
+		log.Printf("Debt Reserve Deployment: ₹%.0f", reserveTotal)
+	}
 }

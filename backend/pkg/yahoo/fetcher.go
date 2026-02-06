@@ -214,31 +214,36 @@ func FetchPriceNDaysAgo(symbol string, days int) (float64, error) {
 		rangeStr = "1y"
 	}
 
-	_, prices, err := FetchHistoricalData(symbol, rangeStr, "1d")
+	timestamps, prices, err := FetchHistoricalData(symbol, rangeStr, "1d")
 	if err != nil {
 		return 0, err
 	}
 
-	// Filter out zero/invalid prices
-	var validPrices []float64
-	for _, p := range prices {
-		if p > 0 {
-			validPrices = append(validPrices, p)
+	type entry struct {
+		ts    int64
+		price float64
+	}
+	var valid []entry
+	for i, p := range prices {
+		if p > 0 && i < len(timestamps) {
+			valid = append(valid, entry{ts: timestamps[i], price: p})
 		}
 	}
 
-	if len(validPrices) == 0 {
+	if len(valid) == 0 {
 		return 0, fmt.Errorf("no valid prices found for %s", symbol)
 	}
 
-	// Get the price from approximately N days ago
-	// Trading days are roughly 5 per week, so approximate index
-	targetIndex := len(validPrices) - 1 - days
-	if targetIndex < 0 {
-		targetIndex = 0
+	targetTime := time.Now().AddDate(0, 0, -days).Unix()
+
+	bestIdx := 0
+	for i, e := range valid {
+		if e.ts <= targetTime {
+			bestIdx = i
+		}
 	}
 
-	return validPrices[targetIndex], nil
+	return valid[bestIdx].price, nil
 }
 
 // FetchRecentHigh retrieves the highest price in the given range (e.g., "1y" for 52-week high)

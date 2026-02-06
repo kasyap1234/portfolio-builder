@@ -16,10 +16,11 @@ import (
 
 // Config holds scheduler configuration
 type Config struct {
-	MonthlySIPAmount float64
-	DebtReserve      float64 // Current debt reserve available
-	TelegramBotToken string
-	TelegramChatID   int64
+	MonthlySIPAmount   float64
+	DebtReserve        float64 // Current debt reserve available
+	TelegramBotToken   string
+	TelegramChatID     int64
+	PETriggerThreshold float64
 }
 
 // Scheduler handles periodic allocation tasks
@@ -35,7 +36,11 @@ type Scheduler struct {
 func NewScheduler(config Config) (*Scheduler, error) {
 	// Create allocator with universal fetcher
 	fetcher := service.NewUniversalFetcher()
-	alloc := allocator.NewAllocator(fetcher)
+	var opts []allocator.AllocatorOption
+	if config.PETriggerThreshold > 0 {
+		opts = append(opts, allocator.WithPETriggerThreshold(config.PETriggerThreshold))
+	}
+	alloc := allocator.NewAllocator(fetcher, opts...)
 
 	// Create Telegram notifier
 	notifier, err := telegram.NewNotifier(config.TelegramBotToken, config.TelegramChatID)

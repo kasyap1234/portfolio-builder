@@ -6,6 +6,7 @@ import (
 	"smart-alert/internal/domain/models"
 	service "smart-alert/internal/domain/service/data_fetcher"
 	"sort"
+	"sync"
 )
 
 // Predefined stock watchlist with Yahoo Finance symbols
@@ -60,8 +61,8 @@ const DebtReserveDeploymentPct = 0.50 // Deploy 50% of debt reserve in DEEP_FEAR
 const DebtReserveFearDeploymentPct = 0.02 // Deploy 2% of debt reserve in FEAR
 
 // PE based deployment
-const PETriggerThreshold = 19.0 // Trigger bulk buy when PE <= 19
-const PEDeploymentPct = 0.30    // Deploy 30% of debt reserve
+const DefaultPETriggerThreshold = 19.0 // Trigger bulk buy when PE <= 19
+const PEDeploymentPct = 0.30           // Deploy 30% of debt reserve
 
 // ============================================
 // Market Regime Based Allocation Constants
@@ -125,12 +126,26 @@ type Allocator interface {
 }
 
 type allocator struct {
-	fetcher service.DataFetcher
+	fetcher            service.DataFetcher
+	peTriggerThreshold float64
 }
 
-func NewAllocator(fetcher service.DataFetcher) Allocator {
-	return &allocator{
-		fetcher: fetcher,
+func NewAllocator(fetcher service.DataFetcher, opts ...AllocatorOption) Allocator {
+	a := &allocator{
+		fetcher:            fetcher,
+		peTriggerThreshold: DefaultPETriggerThreshold,
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
+}
+
+type AllocatorOption func(*allocator)
+
+func WithPETriggerThreshold(threshold float64) AllocatorOption {
+	return func(a *allocator) {
+		a.peTriggerThreshold = threshold
 	}
 }
 
@@ -154,6 +169,7 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 	// 4. Deploy debt reserve based on market regime
 	// DEEP_FEAR: Deploy 50%, FEAR: Deploy 2% (50-50 split: Nifty50 ETF + Whiteoak)
 	if cashInHand > 0 {
+		remainingReserve := cashInHand
 		var deploymentPct float64
 		var regimeLabel string
 
@@ -168,36 +184,46 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 
 		if deploymentPct > 0 {
 			debtDeployment := cashInHand * deploymentPct
+			if debtDeployment > remainingReserve {
+				debtDeployment = remainingReserve
+			}
 			halfDeployment := debtDeployment / 2
 
 			// Nifty50 ETF allocation (50% of deployment)
+			remainingReserve -= halfDeployment
 			recommendations = append(recommendations, models.AllocationRecommendation{
 				AssetSymbol: Nifty50ETFSymbol,
 				AssetType:   models.AssetTypeETF,
 				Amount:      halfDeployment,
-				Reason:      fmt.Sprintf("PANIC BUY: Deploying %.0f%% of debt reserve (₹%.0f) to Nifty50 ETF. Market in %s (DMA: %.1f%%)", deploymentPct*100, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
+				Reason:      fmt.Sprintf("PANIC BUY: Deploying %.0f%% of debt reserve, ₹%.0f total (₹%.0f to Nifty50 ETF). Market in %s (DMA: %.1f%%)", deploymentPct*100, debtDeployment, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
 			})
 
 			// Whiteoak Flexi Cap Fund allocation (50% of deployment)
+			remainingReserve -= halfDeployment
 			recommendations = append(recommendations, models.AllocationRecommendation{
 				AssetSymbol: WhiteoakFlexiCapCode,
 				AssetType:   models.AssetTypeMF,
 				Amount:      halfDeployment,
-				Reason:      fmt.Sprintf("PANIC BUY: Deploying %.0f%% of debt reserve (₹%.0f) to Whiteoak Flexi Cap. Market in %s (DMA: %.1f%%)", deploymentPct*100, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
+				Reason:      fmt.Sprintf("PANIC BUY: Deploying %.0f%% of debt reserve, ₹%.0f total (₹%.0f to Whiteoak Flexi Cap). Market in %s (DMA: %.1f%%)", deploymentPct*100, debtDeployment, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
 			})
 		}
 
-		// 4.1 Check Nifty PE Trigger (Independent and Additive)
-		// Fetch current Nifty PE
+		// 4.1 Check Nifty PE Trigger (Independent and Additive, bounded by remaining reserve)
 		niftyPE, peErr := a.fetcher.FetchPE(NiftySymbol)
-		if peErr == nil && niftyPE <= PETriggerThreshold {
+		if peErr == nil && niftyPE <= a.peTriggerThreshold {
 			peDeployment := cashInHand * PEDeploymentPct
-			recommendations = append(recommendations, models.AllocationRecommendation{
-				AssetSymbol: Nifty50ETFSymbol,
-				AssetType:   models.AssetTypeETF,
-				Amount:      peDeployment,
-				Reason:      fmt.Sprintf("PE_TRIGGER: Nifty PE at %.2f (<= %.1f). Bulk buying Nifty50 ETF with 30%% of debt reserve (₹%.0f)", niftyPE, PETriggerThreshold, peDeployment),
-			})
+			if peDeployment > remainingReserve {
+				peDeployment = remainingReserve
+			}
+			if peDeployment > 0 {
+				remainingReserve -= peDeployment
+				recommendations = append(recommendations, models.AllocationRecommendation{
+					AssetSymbol: Nifty50ETFSymbol,
+					AssetType:   models.AssetTypeETF,
+					Amount:      peDeployment,
+					Reason:      fmt.Sprintf("PE_TRIGGER: Nifty PE at %.2f (<= %.1f). Bulk buying Nifty50 ETF with %.0f%% of debt reserve (₹%.0f)", niftyPE, a.peTriggerThreshold, PEDeploymentPct*100, peDeployment),
+				})
+			}
 		}
 	}
 
@@ -242,81 +268,76 @@ func (a *allocator) DetermineMarketRegime(niftyMetrics *models.DropMetrics) Mark
 
 	if dmaDistance >= DeepFearThreshold {
 		return RegimeDeepFear
-	} else if dmaDistance > 0 {
-		return RegimeFear
 	} else if math.Abs(dmaDistance) <= NeutralUpperBound {
 		return RegimeNeutral
+	} else if dmaDistance > 0 {
+		return RegimeFear
 	} else {
 		return RegimeGreed
 	}
 }
 
-// CalculateDropMetrics calculates all drop metrics for a given symbol
+// CalculateDropMetrics calculates all drop metrics for a given symbol.
+// All independent API calls are made concurrently for performance.
 func (a *allocator) CalculateDropMetrics(symbol string) (*models.DropMetrics, error) {
 	fetcher := a.fetcher
 
+	var (
+		price, dma200, weekAgoPrice, monthAgoPrice, high52w float64
+		priceErr, dmaErr, weekErr, monthErr, highErr        error
+		wg                                                  sync.WaitGroup
+	)
+
+	wg.Add(5)
+	go func() { defer wg.Done(); price, priceErr = fetcher.FetchCurrentPrice(symbol) }()
+	go func() { defer wg.Done(); dma200, dmaErr = fetcher.FetchDMA200(symbol) }()
+	go func() { defer wg.Done(); weekAgoPrice, weekErr = fetcher.FetchPriceNDaysAgo(symbol, 7) }()
+	go func() { defer wg.Done(); monthAgoPrice, monthErr = fetcher.FetchPriceNDaysAgo(symbol, 22) }()
+	go func() { defer wg.Done(); high52w, highErr = fetcher.Fetch52WeekHigh(symbol) }()
+	wg.Wait()
+
+	if priceErr != nil {
+		return nil, fmt.Errorf("failed to fetch current price for %s: %v", symbol, priceErr)
+	}
+
 	metrics := &models.DropMetrics{
-		Symbol: symbol,
+		Symbol:       symbol,
+		CurrentPrice: price,
 	}
 
-	// Current price
-	price, err := fetcher.FetchCurrentPrice(symbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch current price for %s: %v", symbol, err)
-	}
-	metrics.CurrentPrice = price
-
-	// 200 DMA
-	dma200, err := fetcher.FetchDMA200(symbol)
-	if err != nil {
-		dma200 = price // Fallback
+	if dmaErr != nil {
+		dma200 = price
 	}
 	metrics.DMA200 = dma200
-
-	// Calculate DMA distance (positive = below DMA, negative = above DMA)
 	if dma200 > 0 {
 		metrics.DMADistance = (dma200 - price) / dma200 * 100
 	}
 
-	// 1 week ago price
-	weekAgoPrice, err := fetcher.FetchPriceNDaysAgo(symbol, 7)
-	if err != nil {
+	if weekErr != nil {
 		weekAgoPrice = price
 	}
 	metrics.WeekAgoPrice = weekAgoPrice
-
-	// Calculate week drop (positive = down, negative = up)
 	if weekAgoPrice > 0 {
 		metrics.WeekDrop = (weekAgoPrice - price) / weekAgoPrice * 100
 	}
 
-	// 1 month ago price
-	monthAgoPrice, err := fetcher.FetchPriceNDaysAgo(symbol, 22)
-	if err != nil {
+	if monthErr != nil {
 		monthAgoPrice = price
 	}
 	metrics.MonthAgoPrice = monthAgoPrice
-
-	// Calculate month drop
 	if monthAgoPrice > 0 {
 		metrics.MonthDrop = (monthAgoPrice - price) / monthAgoPrice * 100
 	}
 
-	// 52-week high
-	high52w, err := fetcher.Fetch52WeekHigh(symbol)
-	if err != nil {
+	if highErr != nil {
 		high52w = price
 	}
 	metrics.RecentHighPrice = high52w
-
-	// Calculate drop from high
 	if high52w > 0 {
 		metrics.HighDrop = (high52w - price) / high52w * 100
 	}
 
-	// Calculate composite score
 	metrics.CalculateCompositeScore()
-
 	return metrics, nil
 }
 
@@ -329,42 +350,59 @@ type QualifiedStock struct {
 	QualifyScore float64 // How much "too down" the stock is
 }
 
-// distributeToStocks determines which stocks qualify and how much to allocate
+// stockAnalysisResult holds the result of analyzing a single stock concurrently
+type stockAnalysisResult struct {
+	Stock    QualifiedStock
+	Qualifies bool
+}
+
+// distributeToStocks determines which stocks qualify and how much to allocate.
+// All stock metrics and market caps are fetched concurrently.
 func (a *allocator) distributeToStocks(equityAmount float64, niftyMetrics *models.DropMetrics, regime MarketRegime) ([]models.AllocationRecommendation, float64, error) {
-	var qualifiedStocks []QualifiedStock
+	results := make([]stockAnalysisResult, len(StockWatchlist))
+	var wg sync.WaitGroup
 
-	// Analyze each stock
-	for _, symbol := range StockWatchlist {
-		metrics, err := a.CalculateDropMetrics(symbol)
-		if err != nil {
-			continue
-		}
+	for i, symbol := range StockWatchlist {
+		wg.Add(1)
+		go func(idx int, sym string) {
+			defer wg.Done()
 
-		// Check if stock qualifies - must be "too down" compared to Nifty
-		qualifies, reason, qualifyScore := a.stockQualifies(metrics, niftyMetrics)
-		if !qualifies {
-			continue
-		}
-
-		// Get market cap for risk weighting - try API first, then fallback
-		marketCap, err := a.fetcher.FetchMarketCap(symbol)
-		if err != nil || marketCap < 10000000000 { // Less than 1000 Cr is suspicious
-			// Use fallback market cap if available
-			if fallback, ok := FallbackMarketCaps[symbol]; ok {
-				marketCap = fallback
+			metrics, err := a.CalculateDropMetrics(sym)
+			if err != nil {
+				return
 			}
+
+			qualifies, _, qualifyScore := a.stockQualifies(metrics, niftyMetrics)
+			if !qualifies {
+				return
+			}
+
+			marketCap, err := a.fetcher.FetchMarketCap(sym)
+			if err != nil || marketCap < 10000000000 {
+				if fallback, ok := FallbackMarketCaps[sym]; ok {
+					marketCap = fallback
+				}
+			}
+
+			results[idx] = stockAnalysisResult{
+				Qualifies: true,
+				Stock: QualifiedStock{
+					Symbol:       sym,
+					Metrics:      metrics,
+					MarketCap:    marketCap,
+					RiskWeight:   calculateRiskWeight(marketCap),
+					QualifyScore: qualifyScore,
+				},
+			}
+		}(i, symbol)
+	}
+	wg.Wait()
+
+	var qualifiedStocks []QualifiedStock
+	for _, r := range results {
+		if r.Qualifies {
+			qualifiedStocks = append(qualifiedStocks, r.Stock)
 		}
-		riskWeight := calculateRiskWeight(marketCap)
-
-		qualifiedStocks = append(qualifiedStocks, QualifiedStock{
-			Symbol:       symbol,
-			Metrics:      metrics,
-			MarketCap:    marketCap,
-			RiskWeight:   riskWeight,
-			QualifyScore: qualifyScore,
-		})
-
-		_ = reason // Used in recommendation
 	}
 
 	if len(qualifiedStocks) == 0 {
@@ -585,26 +623,39 @@ func (a *allocator) allocateToQualifiedStocks(stocks []QualifiedStock, totalAmou
 	return recs, actualTotal
 }
 
-// distributeMFAllocation distributes MF allocation
+// distributeMFAllocation distributes MF allocation.
+// MF metrics are fetched concurrently.
 func (a *allocator) distributeMFAllocation(amount float64, niftyMetrics *models.DropMetrics, regime MarketRegime) []models.AllocationRecommendation {
 	if len(MFWatchlist) == 0 || amount <= 0 {
 		return nil
 	}
 
-	// Evenly distribute among MFs
 	perMF := amount / float64(len(MFWatchlist))
 
-	var recs []models.AllocationRecommendation
-	for _, mfCode := range MFWatchlist {
-		metrics, _ := a.CalculateDropMetrics(mfCode)
+	type mfResult struct {
+		Code    string
+		Metrics *models.DropMetrics
+	}
+	mfResults := make([]mfResult, len(MFWatchlist))
+	var wg sync.WaitGroup
+	for i, mfCode := range MFWatchlist {
+		wg.Add(1)
+		go func(idx int, code string) {
+			defer wg.Done()
+			metrics, _ := a.CalculateDropMetrics(code)
+			mfResults[idx] = mfResult{Code: code, Metrics: metrics}
+		}(i, mfCode)
+	}
+	wg.Wait()
 
+	recs := make([]models.AllocationRecommendation, 0, len(MFWatchlist))
+	for _, mr := range mfResults {
 		mfInfo := ""
-		if metrics != nil {
-			mfInfo = fmt.Sprintf(", MF DMA: %.1f%%", metrics.DMADistance)
+		if mr.Metrics != nil {
+			mfInfo = fmt.Sprintf(", MF DMA: %.1f%%", mr.Metrics.DMADistance)
 		}
-
 		recs = append(recs, models.AllocationRecommendation{
-			AssetSymbol: mfCode,
+			AssetSymbol: mr.Code,
 			AssetType:   models.AssetTypeMF,
 			Amount:      perMF,
 			Reason: fmt.Sprintf(
@@ -613,7 +664,6 @@ func (a *allocator) distributeMFAllocation(amount float64, niftyMetrics *models.
 			),
 		})
 	}
-
 	return recs
 }
 
