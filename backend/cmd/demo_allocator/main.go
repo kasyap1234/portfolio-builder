@@ -3,117 +3,90 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
+
+	"smart-alert/internal/domain/models"
 	"smart-alert/internal/domain/service/allocator"
 	service "smart-alert/internal/domain/service/data_fetcher"
+	"smart-alert/pkg/allocationreport"
 )
 
 func main() {
-	fmt.Println("=== Smart SIP Allocator Demo ===")
+	fmt.Println("Smart SIP Allocator — Demo")
 	fmt.Println()
 
-	// Create the universal fetcher (handles both stocks and MFs)
 	fetcher := service.NewUniversalFetcher()
-
-	// Create the allocator
 	alloc := allocator.NewAllocator(fetcher)
 
-	// Get current market status
-	fmt.Println("Fetching market data...")
+	fmt.Println("Fetching market data…")
 	niftyMetrics, err := alloc.CalculateDropMetrics("^NSEI")
 	if err != nil {
 		log.Fatalf("Failed to get Nifty metrics: %v", err)
 	}
 
+	niftyPE, peErr := fetcher.FetchPE("^NSEI")
+	regimePE := 0.0
+	if peErr == nil {
+		regimePE = niftyPE
+	}
+	regime := alloc.DetermineMarketRegime(niftyMetrics, regimePE)
+
 	fmt.Println()
-	fmt.Println("=== Market Status (Nifty 50) ===")
-	fmt.Printf("Current Price: %.2f\n", niftyMetrics.CurrentPrice)
-	fmt.Printf("200 DMA:       %.2f\n", niftyMetrics.DMA200)
-	fmt.Printf("DMA Distance:  %.2f%% %s\n", niftyMetrics.DMADistance, getDMALabel(niftyMetrics.DMADistance))
-	fmt.Printf("Week Drop:     %.2f%%\n", niftyMetrics.WeekDrop)
-	fmt.Printf("Month Drop:    %.2f%%\n", niftyMetrics.MonthDrop)
-	fmt.Printf("High Drop:     %.2f%%\n", niftyMetrics.HighDrop)
-	fmt.Printf("Composite:     %.2f\n", niftyMetrics.CompositeScore)
+	fmt.Print(formatMarketStatus(niftyMetrics, niftyPE, peErr, regime))
 	fmt.Println()
 
-	regime := alloc.DetermineMarketRegime(niftyMetrics)
-	fmt.Printf("Market Regime: %s\n", regime)
-	fmt.Println()
-
-	// Example SIP amount and debt reserve
-	sipAmount := 35000.0
-	debtReserve := 100000.0 // Example: ₹1 lakh in debt reserve for panic buying
-	fmt.Printf("=== SIP Allocation for ₹%.0f (Debt Reserve: ₹%.0f) ===\n", sipAmount, debtReserve)
-	fmt.Println()
+	sipAmount := 45000.0
+	debtReserve := 120000.0
 
 	recommendations, err := alloc.Allocate(sipAmount, nil, debtReserve, nil)
 	if err != nil {
 		log.Fatalf("Allocation failed: %v", err)
 	}
 
-	// Display recommendations by type
-	var mfTotal, stockTotal, debtTotal float64
-	var mfRecs, stockRecs, debtRecs []string
-
-	for _, rec := range recommendations {
-		switch rec.AssetType {
-		case "MF":
-			mfTotal += rec.Amount
-			mfRecs = append(mfRecs, fmt.Sprintf("  %s: ₹%.0f - %s", rec.AssetSymbol, rec.Amount, rec.Reason))
-		case "STOCK":
-			stockTotal += rec.Amount
-			stockRecs = append(stockRecs, fmt.Sprintf("  %s: ₹%.0f - %s", rec.AssetSymbol, rec.Amount, rec.Reason))
-		case "DEBT":
-			debtTotal += rec.Amount
-			debtRecs = append(debtRecs, fmt.Sprintf("  %s: ₹%.0f - %s", rec.AssetSymbol, rec.Amount, rec.Reason))
-		}
+	opts := allocationreport.Options{
+		SIPAmount:   sipAmount,
+		DebtReserve: debtReserve,
+		Regime:      string(regime),
+		Title:       "SIP Allocation (demo)",
+	}
+	if peErr == nil {
+		opts.NiftyPE = niftyPE
 	}
 
-	fmt.Println("--- Mutual Funds ---")
-	if len(mfRecs) > 0 {
-		for _, r := range mfRecs {
-			fmt.Println(r)
-		}
-		fmt.Printf("  Total MF: ₹%.0f (%.1f%%)\n", mfTotal, mfTotal/sipAmount*100)
-	} else {
-		fmt.Println("  (none)")
-	}
-	fmt.Println()
-
-	fmt.Println("--- Individual Stocks ---")
-	if len(stockRecs) > 0 {
-		for _, r := range stockRecs {
-			fmt.Println(r)
-		}
-		fmt.Printf("  Total Stocks: ₹%.0f (%.1f%%)\n", stockTotal, stockTotal/sipAmount*100)
-	} else {
-		fmt.Println("  (none qualified - stocks not down enough vs Nifty)")
-	}
-	fmt.Println()
-
-	fmt.Println("--- Debt ---")
-	if len(debtRecs) > 0 {
-		for _, r := range debtRecs {
-			fmt.Println(r)
-		}
-		fmt.Printf("  Total Debt: ₹%.0f (%.1f%%)\n", debtTotal, debtTotal/sipAmount*100)
-	} else {
-		fmt.Println("  (none)")
-	}
-	fmt.Println()
-
-	fmt.Println("=== Summary ===")
-	fmt.Printf("Equity (MF + Stocks): ₹%.0f (%.1f%%)\n", mfTotal+stockTotal, (mfTotal+stockTotal)/sipAmount*100)
-	fmt.Printf("Debt:                 ₹%.0f (%.1f%%)\n", debtTotal, debtTotal/sipAmount*100)
-	fmt.Printf("Total:                ₹%.0f (100%%)\n", mfTotal+stockTotal+debtTotal)
+	fmt.Println(allocationreport.FormatConsole(recommendations, opts))
 }
 
-func getDMALabel(distance float64) string {
-	if distance >= 10 {
-		return "(DEEP FEAR - below 200 DMA)"
-	} else if distance > 0 {
-		return "(FEAR - below 200 DMA)"
-	} else if distance >= -5 {
-		return "(NEUTRAL - near 200 DMA)"
+func formatMarketStatus(m *models.DropMetrics, niftyPE float64, peErr error, regime allocator.MarketRegime) string {
+	var sb strings.Builder
+	sb.WriteString(strings.Repeat("═", 44) + "\n")
+	sb.WriteString(" Market snapshot (Nifty 50)\n")
+	sb.WriteString(strings.Repeat("═", 44) + "\n")
+	sb.WriteString(fmt.Sprintf(" Price:          ₹%.2f\n", m.CurrentPrice))
+	sb.WriteString(fmt.Sprintf(" 200-DMA:        ₹%.2f\n", m.DMA200))
+	sb.WriteString(fmt.Sprintf(" vs 200-DMA:     %.2f%%  %s\n", m.DMADistance, dmaLabel(m.DMADistance)))
+	sb.WriteString(fmt.Sprintf(" Week / month:   %.2f%% / %.2f%%\n", m.WeekDrop, m.MonthDrop))
+	sb.WriteString(fmt.Sprintf(" From 52w high:  %.2f%%\n", m.HighDrop))
+	sb.WriteString(fmt.Sprintf(" Composite:      %.2f\n", m.CompositeScore))
+	if peErr != nil {
+		sb.WriteString(fmt.Sprintf(" Nifty PE:       unavailable (%v)\n", peErr))
+	} else {
+		effectiveDMA := allocator.EffectiveDMADistance(m.DMADistance, niftyPE)
+		sb.WriteString(fmt.Sprintf(" Nifty PE:       %.2f  (fear boost %+.1f%% → effective DMA %.1f%%)\n",
+			niftyPE, allocator.PEFearBoost(niftyPE), effectiveDMA))
 	}
-	return "(GREED - above 200 DMA)"
+	sb.WriteString(fmt.Sprintf(" Regime:         %s\n", regime))
+	return sb.String()
+}
+
+func dmaLabel(distance float64) string {
+	switch {
+	case distance >= 10:
+		return "deep fear"
+	case distance > 0:
+		return "fear"
+	case distance >= -5:
+		return "neutral"
+	default:
+		return "greed"
+	}
 }

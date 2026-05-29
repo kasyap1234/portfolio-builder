@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"smart-alert/pkg/mf"
+	"smart-alert/pkg/nse"
 	"smart-alert/pkg/yahoo"
 )
 
@@ -73,7 +74,15 @@ func (f *stockFetcher) FetchMarketCap(symbol string) (float64, error) {
 }
 
 func (f *stockFetcher) FetchPE(symbol string) (float64, error) {
-	return yahoo.FetchPE(symbol)
+	if nse.IsIndexSymbol(symbol) {
+		return nse.FetchPEForSymbol(symbol)
+	}
+	pe, err := yahoo.FetchPE(symbol)
+	if err == nil {
+		return pe, nil
+	}
+	// Yahoo v7 quote often returns 401; no other free source for individual stock PE here.
+	return 0, err
 }
 
 func (f *stockFetcher) FetchPriceNDaysAgo(symbol string, days int) (float64, error) {

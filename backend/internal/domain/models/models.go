@@ -26,11 +26,20 @@ type Portfolio struct {
 	Cash   float64
 }
 
+// AllocationSource distinguishes monthly SIP budget from debt-reserve deployments.
+type AllocationSource string
+
+const (
+	AllocationSourceSIP         AllocationSource = "sip"
+	AllocationSourceDebtReserve AllocationSource = "debt_reserve"
+)
+
 type AllocationRecommendation struct {
 	AssetSymbol string
 	AssetType   AssetType
 	Amount      float64
 	Reason      string
+	Source      AllocationSource // empty defaults to SIP
 }
 
 type MarketStatus struct {

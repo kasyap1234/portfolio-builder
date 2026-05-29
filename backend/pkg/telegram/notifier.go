@@ -2,9 +2,9 @@ package telegram
 
 import (
 	"fmt"
-	"strings"
 
 	"smart-alert/internal/domain/models"
+	"smart-alert/pkg/allocationreport"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -32,65 +32,7 @@ func (n *Notifier) SendMessage(text string) error {
 	return err
 }
 
-// FormatRecommendations converts allocation recommendations to a formatted message
-func FormatRecommendations(recs []models.AllocationRecommendation, regime string, totalAmount float64, niftyPE float64) string {
-	var sb strings.Builder
-
-	sb.WriteString("📊 *Monthly SIP Allocation*\n")
-	sb.WriteString(fmt.Sprintf("💰 Amount: ₹%.0f\n", totalAmount))
-	if niftyPE > 0 {
-		sb.WriteString(fmt.Sprintf("📉 Nifty PE: *%.2f*\n", niftyPE))
-	}
-	sb.WriteString(fmt.Sprintf("📈 Market Regime: *%s*\n\n", regime))
-
-	// Group by type
-	var equityRecs, debtRecs, panicRecs, peRecs []models.AllocationRecommendation
-	for _, r := range recs {
-		if strings.HasPrefix(r.Reason, "PANIC BUY") {
-			panicRecs = append(panicRecs, r)
-		} else if strings.HasPrefix(r.Reason, "PE_TRIGGER") {
-			peRecs = append(peRecs, r)
-		} else if r.AssetType == models.AssetTypeDebt {
-			debtRecs = append(debtRecs, r)
-		} else {
-			equityRecs = append(equityRecs, r)
-		}
-	}
-
-	// Panic buys (if any)
-	if len(panicRecs) > 0 {
-		sb.WriteString("🚨 *PANIC BUY DEPLOYMENT*\n")
-		for _, r := range panicRecs {
-			sb.WriteString(fmt.Sprintf("  • %s: ₹%.0f\n", r.AssetSymbol, r.Amount))
-		}
-		sb.WriteString("\n")
-	}
-
-	// PE Trigger buys (if any)
-	if len(peRecs) > 0 {
-		sb.WriteString("📉 *PE TRIGGER ACTIVATED*\n")
-		for _, r := range peRecs {
-			sb.WriteString(fmt.Sprintf("  • %s: ₹%.0f\n", r.AssetSymbol, r.Amount))
-		}
-		sb.WriteString("\n")
-	}
-
-	// Equity allocations
-	if len(equityRecs) > 0 {
-		sb.WriteString("📈 *Equity*\n")
-		for _, r := range equityRecs {
-			sb.WriteString(fmt.Sprintf("  • %s: ₹%.0f\n", r.AssetSymbol, r.Amount))
-		}
-		sb.WriteString("\n")
-	}
-
-	// Debt allocations
-	if len(debtRecs) > 0 {
-		sb.WriteString("🏦 *Debt*\n")
-		for _, r := range debtRecs {
-			sb.WriteString(fmt.Sprintf("  • %s: ₹%.0f\n", r.AssetSymbol, r.Amount))
-		}
-	}
-
-	return sb.String()
+// FormatRecommendations converts allocation recommendations to a formatted Telegram message.
+func FormatRecommendations(recs []models.AllocationRecommendation, opts allocationreport.Options) string {
+	return allocationreport.FormatTelegram(recs, opts)
 }

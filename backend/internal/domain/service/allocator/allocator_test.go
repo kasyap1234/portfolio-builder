@@ -93,20 +93,26 @@ func TestDetermineMarketRegime(t *testing.T) {
 	tests := []struct {
 		name           string
 		dmaDistance    float64 // positive = below DMA
+		niftyPE        float64 // 0 = skip PE adjustment
 		expectedRegime MarketRegime
 	}{
-		{"Deep Fear - 15% below DMA", 15.0, RegimeDeepFear},
-		{"Deep Fear - 10% below DMA", 10.0, RegimeDeepFear},
-		{"Fear - 8% below DMA", 8.0, RegimeFear},
-		{"Fear - 6% below DMA", 6.0, RegimeFear},
-		{"Neutral - 5% below DMA", 5.0, RegimeNeutral},
-		{"Neutral - 3% below DMA", 3.0, RegimeNeutral},
-		{"Neutral - 1% below DMA", 1.0, RegimeNeutral},
-		{"Neutral - at DMA", 0.0, RegimeNeutral},
-		{"Neutral - 3% above DMA", -3.0, RegimeNeutral},
-		{"Neutral - 5% above DMA", -5.0, RegimeNeutral},
-		{"Greed - 6% above DMA", -6.0, RegimeGreed},
-		{"Greed - 10% above DMA", -10.0, RegimeGreed},
+		{"Deep Fear - 15% below DMA", 15.0, 0, RegimeDeepFear},
+		{"Deep Fear - 10% below DMA", 10.0, 0, RegimeDeepFear},
+		{"Fear - 8% below DMA", 8.0, 0, RegimeFear},
+		{"Fear - 6% below DMA", 6.0, 0, RegimeFear},
+		{"Neutral - 5% below DMA", 5.0, 0, RegimeNeutral},
+		{"Neutral - 3% below DMA", 3.0, 0, RegimeNeutral},
+		{"Neutral - 1% below DMA", 1.0, 0, RegimeNeutral},
+		{"Neutral - at DMA", 0.0, 0, RegimeNeutral},
+		{"Neutral - 3% above DMA", -3.0, 0, RegimeNeutral},
+		{"Neutral - 5% above DMA", -5.0, 0, RegimeNeutral},
+		{"Greed - 6% above DMA", -6.0, 0, RegimeGreed},
+		{"Greed - 10% above DMA", -10.0, 0, RegimeGreed},
+		// PE-weighted: cheap market upgrades regime toward fear
+		{"Deep Fear - neutral DMA but very low PE", 3.0, 16.0, RegimeDeepFear},
+		{"Fear - near neutral DMA with low PE", 4.0, 20.0, RegimeFear},
+		{"Neutral - fear DMA offset by high PE", 8.0, 27.0, RegimeNeutral},
+		{"Neutral - mild above DMA dampened by elevated PE", -2.0, 23.0, RegimeNeutral},
 	}
 
 	mockFetcher := new(MockDataFetcher)
@@ -117,10 +123,16 @@ func TestDetermineMarketRegime(t *testing.T) {
 			metrics := &models.DropMetrics{
 				DMADistance: tt.dmaDistance,
 			}
-			regime := alloc.DetermineMarketRegime(metrics)
+			regime := alloc.DetermineMarketRegime(metrics, tt.niftyPE)
 			assert.Equal(t, tt.expectedRegime, regime)
 		})
 	}
+}
+
+func TestEffectiveDMADistance(t *testing.T) {
+	assert.InDelta(t, 15.0, EffectiveDMADistance(3.0, 16.0), 0.01)
+	assert.InDelta(t, -2.0, EffectiveDMADistance(8.0, 27.0), 0.01)
+	assert.InDelta(t, 3.0, EffectiveDMADistance(3.0, 0), 0.01)
 }
 
 func TestAllocate_DeepFear_WithQualifyingStock(t *testing.T) {
@@ -190,7 +202,7 @@ func TestAllocate_Greed_AllToDebt(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	// In Greed: 40% Equity, 60% Debt
+	// In Greed: 30% Equity, 70% Debt (high PE reinforces greed vs 200 DMA)
 	var mfTotal, stockTotal, debtTotal float64
 	for _, r := range recs {
 		switch r.AssetType {
@@ -203,16 +215,16 @@ func TestAllocate_Greed_AllToDebt(t *testing.T) {
 		}
 	}
 
-	// Debt should be ~60% = 6000
-	assert.InDelta(t, 6000.0, debtTotal, 100.0, "Debt should be ~60% in Greed regime")
+	// Debt should be ~70% = 7000
+	assert.InDelta(t, 7000.0, debtTotal, 100.0, "Debt should be ~70% in Greed regime")
 
-	// Total equity should be ~40% = 4000
+	// Total equity should be ~30% = 3000
 	totalEquity := mfTotal + stockTotal
-	assert.InDelta(t, 4000.0, totalEquity, 100.0, "Total equity should be ~40%")
+	assert.InDelta(t, 3000.0, totalEquity, 100.0, "Total equity should be ~30%")
 
 	// No qualifying stocks, so all equity goes to MF
 	assert.Equal(t, 0.0, stockTotal, "No stocks should qualify in Greed with non-down stocks")
-	assert.InDelta(t, 4000.0, mfTotal, 100.0, "All equity should go to MF")
+	assert.InDelta(t, 3000.0, mfTotal, 100.0, "All equity should go to MF")
 }
 
 func TestAllocate_Fear_StockQualifiesSharpDrop(t *testing.T) {
@@ -333,7 +345,7 @@ func TestAllocate_DeepFear_DeploysDebtReserve(t *testing.T) {
 		if r.AssetSymbol == Nifty50ETFSymbol {
 			niftyETFAmount = r.Amount
 		}
-		if r.AssetSymbol == WhiteoakFlexiCapCode && strings.HasPrefix(r.Reason, "PANIC BUY") {
+		if r.AssetSymbol == WhiteoakFlexiCapCode && r.Source == models.AllocationSourceDebtReserve {
 			whiteoakAmount = r.Amount
 		}
 	}
@@ -369,7 +381,7 @@ func TestAllocate_PETrigger_Deploys30Percent(t *testing.T) {
 	var peTriggerAmount float64
 	foundPETrigger := false
 	for _, r := range recs {
-		if r.AssetSymbol == Nifty50ETFSymbol && strings.HasPrefix(r.Reason, "PE_TRIGGER") {
+		if r.AssetSymbol == Nifty50ETFSymbol && r.Source == models.AllocationSourceDebtReserve && strings.Contains(r.Reason, "PE") {
 			peTriggerAmount = r.Amount
 			foundPETrigger = true
 		}

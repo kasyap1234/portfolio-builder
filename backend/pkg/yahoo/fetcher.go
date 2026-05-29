@@ -25,7 +25,7 @@ type chartResponse struct {
 				} `json:"adjclose"`
 			} `json:"indicators"`
 		} `json:"result"`
-		Error interface{} `json:"error"`
+		Error any `json:"error"`
 	} `json:"chart"`
 }
 
@@ -35,7 +35,7 @@ type quoteResponse struct {
 			MarketCap  float64 `json:"marketCap"`
 			TrailingPE float64 `json:"trailingPE"`
 		} `json:"result"`
-		Error interface{} `json:"error"`
+		Error any `json:"error"`
 	} `json:"quoteResponse"`
 }
 
@@ -100,7 +100,8 @@ func FetchMarketCap(symbol string) (float64, error) {
 	return data.QuoteResponse.Result[0].MarketCap, nil
 }
 
-// FetchPE retrieves the trailing PE ratio for a given symbol.
+// FetchPE retrieves the trailing PE ratio for a given symbol via Yahoo quote API.
+// Note: Yahoo frequently returns 401 for this endpoint; use pkg/nse for index PE (^NSEI).
 func FetchPE(symbol string) (float64, error) {
 	if symbol == "" {
 		return 0, errors.New("symbol cannot be empty")

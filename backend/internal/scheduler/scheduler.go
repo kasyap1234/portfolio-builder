@@ -9,6 +9,7 @@ import (
 	"smart-alert/internal/domain/models"
 	"smart-alert/internal/domain/service/allocator"
 	service "smart-alert/internal/domain/service/data_fetcher"
+	"smart-alert/pkg/allocationreport"
 	"smart-alert/pkg/telegram"
 
 	"github.com/robfig/cron/v3"
@@ -110,18 +111,21 @@ func (s *Scheduler) runMonthlyAllocation() {
 		return
 	}
 
-	// Get market regime
+	// Get market regime and Nifty PE for notification
 	niftyMetrics, err := s.allocator.CalculateDropMetrics("^NSEI")
+	niftyPE, _ := s.fetcher.FetchPE("^NSEI")
 	regime := "UNKNOWN"
 	if err == nil {
-		regime = string(s.allocator.DetermineMarketRegime(niftyMetrics))
+		regime = string(s.allocator.DetermineMarketRegime(niftyMetrics, niftyPE))
 	}
 
-	// Get Nifty PE for notification
-	niftyPE, _ := s.fetcher.FetchPE("^NSEI")
-
-	// Format and send message
-	message := telegram.FormatRecommendations(recs, regime, s.config.MonthlySIPAmount, niftyPE)
+	opts := allocationreport.Options{
+		SIPAmount:   s.config.MonthlySIPAmount,
+		DebtReserve: s.config.DebtReserve,
+		Regime:      regime,
+		NiftyPE:     niftyPE,
+	}
+	message := telegram.FormatRecommendations(recs, opts)
 	if err := s.notifier.SendMessage(message); err != nil {
 		log.Printf("Failed to send Telegram message: %v", err)
 		return

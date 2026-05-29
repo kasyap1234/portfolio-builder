@@ -6,6 +6,7 @@ import (
 	"smart-alert/internal/domain/models"
 	service "smart-alert/internal/domain/service/data_fetcher"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -33,7 +34,7 @@ var FallbackMarketCaps = map[string]float64{
 	"ICICIBANK.NS":  9000000000000,  // ~9 Lakh Cr - Large Cap
 	"SHRIRAMFIN.NS": 1100000000000,  // ~1.1 Lakh Cr - Large Cap
 	"RAINBOW.NS":    150000000000,   // ~15k Cr - Small Cap
-	"KPITTECH.NS":   400000000000,   // ~40k Cr - Mid Cap
+	"KPITTECH.NS":   300000000000,   // ~30k Cr - Mid Cap
 	"SENCO.NS":      100000000000,   // ~10k Cr - Small Cap
 	"ZAGGLE.NS":     50000000000,    // ~5k Cr - Small Cap
 	"CAMS.NS":       180000000000,   // ~18k Cr - Small Cap
@@ -68,12 +69,18 @@ const PEDeploymentPct = 0.30           // Deploy 30% of debt reserve
 // Market Regime Based Allocation Constants
 // ============================================
 
-// Market Regime Thresholds (based on Nifty distance from 200 DMA)
+// Market Regime Thresholds (based on effective Nifty distance from 200 DMA)
 const (
-	DeepFearThreshold = 10.0 // Nifty > 10% below 200 DMA
+	DeepFearThreshold = 10.0 // Nifty > 10% below 200 DMA (after PE adjustment)
 	FearThreshold     = 0.0  // Nifty below 200 DMA (but < 10%)
 	NeutralUpperBound = 5.0  // Nifty within ±5% of 200 DMA
 	GreedThreshold    = 5.0  // Nifty > 5% above 200 DMA
+)
+
+// Nifty PE adjustment for regime detection (weighted more heavily than raw DMA)
+const (
+	PENeutralReference = 22.0 // Center of fair-value band for Nifty 50
+	PEFearBoostWeight  = 2.0  // Each PE point below neutral adds this % to effective DMA distance
 )
 
 // Asset Allocation by Market Regime
@@ -92,9 +99,9 @@ var RegimeAllocations = map[MarketRegime]struct {
 	Debt   float64
 }{
 	RegimeDeepFear: {Equity: 1.00, Debt: 0.00}, // Maximum equity in deep fear
-	RegimeFear:     {Equity: 0.75, Debt: 0.25},
-	RegimeNeutral:  {Equity: 0.50, Debt: 0.50},
-	RegimeGreed:    {Equity: 0.40, Debt: 0.60}, // Maximum debt in greed
+	RegimeFear:     {Equity: 0.80, Debt: 0.20},
+	RegimeNeutral:  {Equity: 0.60, Debt: 0.40},
+	RegimeGreed:    {Equity: 0.30, Debt: 0.70}, // Maximum debt in greed
 }
 
 // Stock Selection Thresholds
@@ -102,8 +109,8 @@ const (
 	StockDropMultiplier     = 2.0  // Stock must fall 2x Nifty to qualify
 	SharpWeeklyDrop         = 10.0 // 10% weekly drop is "sharp"
 	SharpMonthlyDrop        = 15.0 // 15% monthly drop is "sharp"
-	MinStockAllocation      = 0.05 // Min 5% of equity can go to stocks (prefer MF)
-	MaxStockAllocation      = 0.35 // Max 35% of equity can go to stocks
+	MinStockAllocation      = 0.03 // Min 3% of equity can go to stocks (prefer MF)
+	MaxStockAllocation      = 0.30 // Max 30% of equity can go to stocks
 	MaxSingleStockPercent   = 0.25 // Max 25% of stock allocation per stock
 	MaxSmallCapTotalPercent = 0.25 // Max 25% of stock allocation to small caps combined
 )
@@ -114,15 +121,15 @@ const (
 	LargeCapThreshold = 1000000000000 // > 1 Lakh Crore
 	MidCapThreshold   = 300000000000  // > 30k Crore
 	LargeCapWeight    = 1.0           // Full weight for stable large caps
-	MidCapWeight      = 0.7           // 70% weight for mid caps
-	SmallCapWeight    = 0.25          // 25% weight for volatile small caps
+	MidCapWeight      = 0.6           // 60% weight for mid caps
+	SmallCapWeight    = 0.10          // 10% weight for volatile small caps
 	UnknownCapWeight  = 0.35          // 35% weight when market cap unknown (conservative)
 )
 
 type Allocator interface {
 	Allocate(amount float64, currentPortfolio []models.Asset, cashInHand float64, watchlist []string) ([]models.AllocationRecommendation, error)
 	CalculateDropMetrics(symbol string) (*models.DropMetrics, error)
-	DetermineMarketRegime(niftyMetrics *models.DropMetrics) MarketRegime
+	DetermineMarketRegime(niftyMetrics *models.DropMetrics, niftyPE float64) MarketRegime
 }
 
 type allocator struct {
@@ -156,8 +163,9 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 		return nil, fmt.Errorf("failed to get Nifty metrics: %v", err)
 	}
 
-	// 2. Determine market regime
-	regime := a.DetermineMarketRegime(niftyMetrics)
+	// 2. Determine market regime (DMA + Nifty PE; PE weighted heavily)
+	niftyPE, _ := a.fetcher.FetchPE(NiftySymbol)
+	regime := a.DetermineMarketRegime(niftyMetrics, niftyPE)
 	allocation := RegimeAllocations[regime]
 
 	recommendations := []models.AllocationRecommendation{}
@@ -195,7 +203,8 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 				AssetSymbol: Nifty50ETFSymbol,
 				AssetType:   models.AssetTypeETF,
 				Amount:      halfDeployment,
-				Reason:      fmt.Sprintf("PANIC BUY: Deploying %.0f%% of debt reserve, ₹%.0f total (₹%.0f to Nifty50 ETF). Market in %s (DMA: %.1f%%)", deploymentPct*100, debtDeployment, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
+				Source:      models.AllocationSourceDebtReserve,
+				Reason:      reasonPanicBuyETF(deploymentPct, debtDeployment, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
 			})
 
 			// Whiteoak Flexi Cap Fund allocation (50% of deployment)
@@ -204,13 +213,13 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 				AssetSymbol: WhiteoakFlexiCapCode,
 				AssetType:   models.AssetTypeMF,
 				Amount:      halfDeployment,
-				Reason:      fmt.Sprintf("PANIC BUY: Deploying %.0f%% of debt reserve, ₹%.0f total (₹%.0f to Whiteoak Flexi Cap). Market in %s (DMA: %.1f%%)", deploymentPct*100, debtDeployment, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
+				Source:      models.AllocationSourceDebtReserve,
+				Reason:      reasonPanicBuyMF(deploymentPct, debtDeployment, halfDeployment, regimeLabel, niftyMetrics.DMADistance),
 			})
 		}
 
 		// 4.1 Check Nifty PE Trigger (Independent and Additive, bounded by remaining reserve)
-		niftyPE, peErr := a.fetcher.FetchPE(NiftySymbol)
-		if peErr == nil && niftyPE <= a.peTriggerThreshold {
+		if niftyPE > 0 && niftyPE <= a.peTriggerThreshold {
 			peDeployment := cashInHand * PEDeploymentPct
 			if peDeployment > remainingReserve {
 				peDeployment = remainingReserve
@@ -221,7 +230,8 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 					AssetSymbol: Nifty50ETFSymbol,
 					AssetType:   models.AssetTypeETF,
 					Amount:      peDeployment,
-					Reason:      fmt.Sprintf("PE_TRIGGER: Nifty PE at %.2f (<= %.1f). Bulk buying Nifty50 ETF with %.0f%% of debt reserve (₹%.0f)", niftyPE, a.peTriggerThreshold, PEDeploymentPct*100, peDeployment),
+					Source:      models.AllocationSourceDebtReserve,
+					Reason:      reasonPETrigger(niftyPE, a.peTriggerThreshold, PEDeploymentPct, peDeployment),
 				})
 			}
 		}
@@ -253,28 +263,46 @@ func (a *allocator) Allocate(amount float64, currentPortfolio []models.Asset, ca
 			AssetSymbol: "DEBT_BUCKET",
 			AssetType:   models.AssetTypeDebt,
 			Amount:      debtAmount,
-			Reason:      fmt.Sprintf("Debt allocation (%.0f%%) in %s market regime", allocation.Debt*100, regime),
+			Source:      models.AllocationSourceSIP,
+			Reason:      reasonDebtSIP(allocation.Debt, regime),
 		})
 	}
 
 	return recommendations, nil
 }
 
-// DetermineMarketRegime determines the current market regime based on Nifty metrics
-func (a *allocator) DetermineMarketRegime(niftyMetrics *models.DropMetrics) MarketRegime {
-	// DMADistance is positive when below DMA (good for buying)
-	// Negative when above DMA
-	dmaDistance := niftyMetrics.DMADistance
-
-	if dmaDistance >= DeepFearThreshold {
-		return RegimeDeepFear
-	} else if math.Abs(dmaDistance) <= NeutralUpperBound {
-		return RegimeNeutral
-	} else if dmaDistance > 0 {
-		return RegimeFear
-	} else {
-		return RegimeGreed
+// PEFearBoost converts Nifty PE into an additive adjustment to DMA distance.
+// Low PE increases effective fear (positive boost); high PE reduces it.
+func PEFearBoost(niftyPE float64) float64 {
+	if niftyPE <= 0 {
+		return 0
 	}
+	return (PENeutralReference - niftyPE) * PEFearBoostWeight
+}
+
+// EffectiveDMADistance combines 200-DMA distance with a PE-based fear boost for regime detection.
+func EffectiveDMADistance(dmaDistance, niftyPE float64) float64 {
+	return dmaDistance + PEFearBoost(niftyPE)
+}
+
+func marketRegimeFromDMADistance(effectiveDistance float64) MarketRegime {
+	if effectiveDistance >= DeepFearThreshold {
+		return RegimeDeepFear
+	}
+	if math.Abs(effectiveDistance) <= NeutralUpperBound {
+		return RegimeNeutral
+	}
+	if effectiveDistance > 0 {
+		return RegimeFear
+	}
+	return RegimeGreed
+}
+
+// DetermineMarketRegime determines the current market regime from Nifty 200-DMA distance
+// and Nifty PE. PE is weighted heavily via EffectiveDMADistance. Pass niftyPE <= 0 to
+// skip PE adjustment when PE is unavailable.
+func (a *allocator) DetermineMarketRegime(niftyMetrics *models.DropMetrics, niftyPE float64) MarketRegime {
+	return marketRegimeFromDMADistance(EffectiveDMADistance(niftyMetrics.DMADistance, niftyPE))
 }
 
 // CalculateDropMetrics calculates all drop metrics for a given symbol.
@@ -352,7 +380,7 @@ type QualifiedStock struct {
 
 // stockAnalysisResult holds the result of analyzing a single stock concurrently
 type stockAnalysisResult struct {
-	Stock    QualifiedStock
+	Stock     QualifiedStock
 	Qualifies bool
 }
 
@@ -462,17 +490,17 @@ func (a *allocator) stockQualifies(stockMetrics, niftyMetrics *models.DropMetric
 	// Stock qualifies if it meets at least one criterion
 	qualifies := len(reasons) > 0
 
-	reason := ""
+	var reason strings.Builder
 	if qualifies {
 		for i, r := range reasons {
 			if i > 0 {
-				reason += ", "
+				reason.WriteString(", ")
 			}
-			reason += r
+			reason.WriteString(r)
 		}
 	}
 
-	return qualifies, reason, qualifyScore
+	return qualifies, reason.String(), qualifyScore
 }
 
 // calculateRiskWeight returns a weight based on market cap
@@ -543,10 +571,7 @@ func (a *allocator) allocateToQualifiedStocks(stocks []QualifiedStock, totalAmou
 	}
 
 	// Take top N stocks (max 5)
-	maxStocks := 5
-	if len(stocks) < maxStocks {
-		maxStocks = len(stocks)
-	}
+	maxStocks := min(len(stocks), 5)
 	stocks = stocks[:maxStocks]
 
 	// Calculate weighted scores for distribution
@@ -581,12 +606,13 @@ func (a *allocator) allocateToQualifiedStocks(stocks []QualifiedStock, totalAmou
 		// Determine cap category
 		capLabel := "Large"
 		isSmallCap := false
-		if stock.RiskWeight == MidCapWeight {
+		switch stock.RiskWeight {
+		case MidCapWeight:
 			capLabel = "Mid"
-		} else if stock.RiskWeight == SmallCapWeight {
+		case SmallCapWeight:
 			capLabel = "Small"
 			isSmallCap = true
-		} else if stock.RiskWeight == UnknownCapWeight {
+		case UnknownCapWeight:
 			capLabel = "Unknown"
 			isSmallCap = true // Treat unknown as small cap for capping purposes
 		}
@@ -609,10 +635,10 @@ func (a *allocator) allocateToQualifiedStocks(stocks []QualifiedStock, totalAmou
 			AssetSymbol: stock.Symbol,
 			AssetType:   models.AssetTypeStock,
 			Amount:      allocation,
-			Reason: fmt.Sprintf(
-				"%s Cap (₹%.0fCr). Down vs Nifty: DMA %.1f%% vs %.1f%%, Week %.1f%%, Month %.1f%%. Score: %.2f",
+			Source:      models.AllocationSourceSIP,
+			Reason: reasonStock(
 				capLabel,
-				stock.MarketCap/10000000, // Convert to Crores
+				stock.MarketCap/10000000,
 				stock.Metrics.DMADistance, niftyMetrics.DMADistance,
 				stock.Metrics.WeekDrop, stock.Metrics.MonthDrop,
 				stock.QualifyScore,
@@ -650,18 +676,17 @@ func (a *allocator) distributeMFAllocation(amount float64, niftyMetrics *models.
 
 	recs := make([]models.AllocationRecommendation, 0, len(MFWatchlist))
 	for _, mr := range mfResults {
-		mfInfo := ""
+		var mfDMA *float64
 		if mr.Metrics != nil {
-			mfInfo = fmt.Sprintf(", MF DMA: %.1f%%", mr.Metrics.DMADistance)
+			d := mr.Metrics.DMADistance
+			mfDMA = &d
 		}
 		recs = append(recs, models.AllocationRecommendation{
 			AssetSymbol: mr.Code,
 			AssetType:   models.AssetTypeMF,
 			Amount:      perMF,
-			Reason: fmt.Sprintf(
-				"Equity MF in %s regime. Nifty DMA: %.1f%%%s",
-				regime, niftyMetrics.DMADistance, mfInfo,
-			),
+			Source:      models.AllocationSourceSIP,
+			Reason:      reasonMFSIP(regime, niftyMetrics.DMADistance, mfDMA),
 		})
 	}
 	return recs
